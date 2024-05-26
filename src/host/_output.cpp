@@ -13,11 +13,6 @@
 #include "../types/inc/Viewport.hpp"
 #include "../types/inc/convert.hpp"
 
-#include <algorithm>
-#include <iterator>
-
-#pragma hdrstop
-
 using namespace Microsoft::Console::Types;
 using Microsoft::Console::Interactivity::ServiceLocator;
 
@@ -309,10 +304,7 @@ void WriteToScreen(SCREEN_INFORMATION& screenInfo, const Viewport& region)
 
             if (wroteWholeBuffer && startedAtOrigin && wroteSpaces)
             {
-                // It's important that we flush the renderer at this point so we don't
-                // have any pending output rendered after the scrollback is cleared.
-                ServiceLocator::LocateGlobals().pRender->TriggerFlush(false);
-                hr = gci.GetVtIo()->ManuallyClearScrollback();
+                gci.GetVtIo()->WriteUTF8("\x1b[3J");
             }
         }
     }

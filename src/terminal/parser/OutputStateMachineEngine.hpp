@@ -15,11 +15,6 @@ Abstract:
 #include "../adapter/termDispatch.hpp"
 #include "IStateMachineEngine.hpp"
 
-namespace Microsoft::Console::Render
-{
-    class VtEngine;
-}
-
 namespace Microsoft::Console::VirtualTerminal
 {
     class OutputStateMachineEngine : public IStateMachineEngine
@@ -56,16 +51,11 @@ namespace Microsoft::Console::VirtualTerminal
 
         bool ActionSs3Dispatch(const wchar_t wch, const VTParameters parameters) noexcept override;
 
-        void SetTerminalConnection(Microsoft::Console::Render::VtEngine* const pTtyConnection,
-                                   std::function<bool()> pfnFlushToTerminal);
-
         const ITermDispatch& Dispatch() const noexcept;
         ITermDispatch& Dispatch() noexcept;
 
     private:
         std::unique_ptr<ITermDispatch> _dispatch;
-        Microsoft::Console::Render::VtEngine* _pTtyConnection;
-        std::function<bool()> _pfnFlushToTerminal;
         wchar_t _lastPrintedChar;
 
         enum EscActionCodes : uint64_t

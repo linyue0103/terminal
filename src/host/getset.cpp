@@ -369,16 +369,34 @@ void ApiRoutines::GetNumberOfConsoleMouseButtonsImpl(ULONG& buttons) noexcept
 
         if (gci.IsInVtIoMode())
         {
+            auto oldMode = context.InputMode;
+            auto newMode = mode;
+
             // Mouse input should be received when mouse mode is on and quick edit mode is off
             // (for more information regarding the quirks of mouse mode and why/how it relates
             //  to quick edit mode, see GH#9970)
             const auto newQuickEditMode{ WI_IsFlagSet(gci.Flags, CONSOLE_QUICK_EDIT_MODE) };
-            const auto oldMouseMode{ !oldQuickEditMode && WI_IsFlagSet(context.InputMode, ENABLE_MOUSE_INPUT) };
-            const auto newMouseMode{ !newQuickEditMode && WI_IsFlagSet(mode, ENABLE_MOUSE_INPUT) };
+            WI_ClearFlagIf(oldMode, ENABLE_MOUSE_INPUT, oldQuickEditMode);
+            WI_ClearFlagIf(newMode, ENABLE_MOUSE_INPUT, newQuickEditMode);
 
-            if (oldMouseMode != newMouseMode)
+            if (const auto diff = oldMode ^ newMode)
             {
-                LOG_IF_FAILED(gci.GetVtIo()->RequestMouseMode(newMouseMode));
+                const auto io = gci.GetVtIo();
+                const auto cork = io->Cork();
+
+                if (WI_IsFlagSet(diff, DISABLE_NEWLINE_AUTO_RETURN))
+                {
+                    char buf[] = "\x1b[20h";
+                    buf[std::size(buf) - 2] = WI_IsFlagClear(mode, DISABLE_NEWLINE_AUTO_RETURN) ? 'h' : 'l';
+                    io->WriteUTF8(buf);
+                }
+
+                if (WI_IsFlagSet(diff, ENABLE_MOUSE_INPUT))
+                {
+                    char buf[] = "\x1b[?1003;1006";
+                    buf[std::size(buf) - 2] = WI_IsFlagSet(mode, ENABLE_MOUSE_INPUT) ? 'h' : 'l';
+                    io->WriteUTF8(buf);
+                }
             }
         }
 
@@ -416,7 +434,6 @@ void ApiRoutines::GetNumberOfConsoleMouseButtonsImpl(ULONG& buttons) noexcept
 {
     try
     {
-        auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
         LockConsole();
         auto Unlock = wil::scope_exit([&] { UnlockConsole(); });
 
@@ -437,14 +454,11 @@ void ApiRoutines::GetNumberOfConsoleMouseButtonsImpl(ULONG& buttons) noexcept
             screenInfo.GetStateMachine().ResetState();
         }
 
-        // if we changed rendering modes then redraw the output buffer,
-        // but only do this if we're not in conpty mode.
-        if (!gci.IsInVtIoMode() &&
-            (WI_IsFlagSet(dwNewMode, ENABLE_VIRTUAL_TERMINAL_PROCESSING) != WI_IsFlagSet(dwOldMode, ENABLE_VIRTUAL_TERMINAL_PROCESSING) ||
+        // if we changed rendering modes then redraw the output buffer.
+        if ((WI_IsFlagSet(dwNewMode, ENABLE_VIRTUAL_TERMINAL_PROCESSING) != WI_IsFlagSet(dwOldMode, ENABLE_VIRTUAL_TERMINAL_PROCESSING) ||
              WI_IsFlagSet(dwNewMode, ENABLE_LVB_GRID_WORLDWIDE) != WI_IsFlagSet(dwOldMode, ENABLE_LVB_GRID_WORLDWIDE)))
         {
-            auto* pRender = ServiceLocator::LocateGlobals().pRender;
-            if (pRender)
+            if (const auto pRender = ServiceLocator::LocateGlobals().pRender)
             {
                 pRender->TriggerRedrawAll();
             }
@@ -713,7 +727,12 @@ void ApiRoutines::GetLargestConsoleWindowSizeImpl(const SCREEN_INFORMATION& cont
 
         // MSFT: 15813316 - Try to use this SetCursorPosition call to inherit the cursor position.
         auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
-        RETURN_IF_FAILED(gci.GetVtIo()->SetCursorPosition(position));
+        if (gci.IsInVtIoMode())
+        {
+            const auto x = std::clamp(position.x + 1, 1, coordScreenBufferSize.width);
+            const auto y = std::clamp(position.y + 1, 1, coordScreenBufferSize.height);
+            gci.GetVtIo()->WriteFormat(FMT_COMPILE("\x1b[{};{}H"), y, x);
+        }
 
         RETURN_IF_NTSTATUS_FAILED(buffer.SetCursorPosition(position, true));
 
@@ -789,6 +808,14 @@ void ApiRoutines::GetLargestConsoleWindowSizeImpl(const SCREEN_INFORMATION& cont
 
         context.SetCursorInformation(size, isVisible);
 
+        auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
+        if (gci.IsInVtIoMode())
+        {
+            char buf[] = "\x1b[?25l";
+            buf[std::size(buf) - 2] = isVisible ? 'h' : 'l';
+            gci.GetVtIo()->WriteUTF8(buf);
+        }
+
         return S_OK;
     }
     CATCH_RETURN();
@@ -854,14 +881,7 @@ void ApiRoutines::GetLargestConsoleWindowSizeImpl(const SCREEN_INFORMATION& cont
             context.PostUpdateWindowSize();
 
             // Use WriteToScreen to invalidate the viewport with the renderer.
-            // GH#3490 - If we're in conpty mode, don't invalidate the entire
-            // viewport. In conpty mode, the VtEngine will later decide what
-            // part of the buffer actually needs to be re-sent to the terminal.
-            if (!(g.getConsoleInformation().IsInVtIoMode() &&
-                  g.getConsoleInformation().GetVtIo()->IsResizeQuirkEnabled()))
-            {
-                WriteToScreen(context, context.GetViewport());
-            }
+            WriteToScreen(context, context.GetViewport());
         }
         return S_OK;
     }
@@ -939,23 +959,15 @@ void ApiRoutines::GetLargestConsoleWindowSizeImpl(const SCREEN_INFORMATION& cont
         auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
         if (enableCmdShim && gci.IsInVtIoMode())
         {
-            const auto currentBufferDimensions = buffer.GetBufferSize().Dimensions();
-            const auto sourceIsWholeBuffer = (source.top == 0) &&
-                                             (source.left == 0) &&
-                                             (source.right == currentBufferDimensions.width) &&
-                                             (source.bottom == currentBufferDimensions.height);
-            const auto targetIsNegativeBufferHeight = (target.x == 0) &&
-                                                      (target.y == -currentBufferDimensions.height);
-            const auto noClipProvided = clip == std::nullopt;
-            const auto fillIsBlank = (fillCharacter == UNICODE_SPACE) &&
-                                     (fillAttribute == buffer.GetAttributes().GetLegacyAttributes());
+            const auto size = buffer.GetBufferSize().ToInclusive();
+            const auto sourceIsWholeBuffer = source == size;
+            const auto targetIsNegativeBufferHeight = target.x == 0 && target.y == -size.bottom;
+            const auto noClipProvided = !clip;
+            const auto fillIsBlank = fillCharacter == UNICODE_SPACE && fillAttribute == buffer.GetAttributes().GetLegacyAttributes();
 
             if (sourceIsWholeBuffer && targetIsNegativeBufferHeight && noClipProvided && fillIsBlank)
             {
-                // It's important that we flush the renderer at this point so we don't
-                // have any pending output rendered after the scrollback is cleared.
-                ServiceLocator::LocateGlobals().pRender->TriggerFlush(false);
-                hr = gci.GetVtIo()->ManuallyClearScrollback();
+                gci.GetVtIo()->WriteUTF8("\x1b[3J");
             }
         }
 
@@ -983,6 +995,34 @@ void ApiRoutines::GetLargestConsoleWindowSizeImpl(const SCREEN_INFORMATION& cont
 
         const TextAttribute attr{ attribute };
         context.SetAttributes(attr);
+
+        auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
+        if (gci.IsInVtIoMode())
+        {
+            // The Console API represents colors in BGR order, but VT represents them in RGB order.
+            // This LUT transposes them. This is for foreground colors. Add +10 to get the background ones.
+            static constexpr uint8_t consoleToAnsiLUT[16] = {
+                30, // Black
+                34, // Blue
+                32, // Green
+                36, // Cyan
+                31, // Red
+                35, // Magenta
+                33, // Yellow
+                37, // White
+                90, // Bright Black
+                94, // Bright Blue
+                92, // Bright Green
+                96, // Bright Cyan
+                91, // Bright Red
+                95, // Bright Magenta
+                93, // Bright Yellow
+                97, // Bright White
+            };
+            const auto fg = consoleToAnsiLUT[attribute & FG_ATTRS];
+            const auto bg = consoleToAnsiLUT[(attribute & BG_ATTRS) >> 4] + 10;
+            gci.GetVtIo()->WriteFormat(FMT_COMPILE("\x1b[{};{}m"), fg, bg);
+        }
 
         return S_OK;
     }
@@ -1516,6 +1556,15 @@ void ApiRoutines::GetConsoleDisplayModeImpl(ULONG& flags) noexcept
     LockConsole();
     auto Unlock = wil::scope_exit([&] { UnlockConsole(); });
 
-    ServiceLocator::LocateGlobals().getConsoleInformation().SetTitle(title);
+    auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
+    gci.SetTitle(title);
+
+    if (gci.IsInVtIoMode())
+    {
+        const auto io = gci.GetVtIo();
+        const auto title8 = til::u16u8(title);
+        io->WriteFormat(FMT_COMPILE("\x1b]0;{}\x7"), title8);
+    }
+
     return S_OK;
 }

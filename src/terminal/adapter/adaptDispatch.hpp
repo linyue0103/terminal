@@ -36,7 +36,7 @@ namespace Microsoft::Console::VirtualTerminal
         using RenderSettings = Microsoft::Console::Render::RenderSettings;
 
     public:
-        AdaptDispatch(ITerminalApi& api, Renderer& renderer, RenderSettings& renderSettings, TerminalInput& terminalInput);
+        AdaptDispatch(ITerminalApi& api, Renderer* renderer, RenderSettings& renderSettings, TerminalInput& terminalInput);
 
         void Print(const wchar_t wchPrintable) override;
         void PrintString(const std::wstring_view string) override;
@@ -279,14 +279,11 @@ namespace Microsoft::Console::VirtualTerminal
         void _ReportTabStops();
         StringHandler _RestoreTabStops();
 
-        StringHandler _CreateDrcsPassthroughHandler(const DispatchTypes::CharsetSize charsetSize);
-        StringHandler _CreatePassthroughHandler();
-
         std::vector<uint8_t> _tabStopColumns;
         bool _initDefaultTabStops = true;
 
         ITerminalApi& _api;
-        Renderer& _renderer;
+        Renderer* _renderer;
         RenderSettings& _renderSettings;
         TerminalInput& _terminalInput;
         TerminalOutput _termOutput;

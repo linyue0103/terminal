@@ -5,13 +5,9 @@
 #include "VtIo.hpp"
 #include "../interactivity/inc/ServiceLocator.hpp"
 
-#include "../renderer/vt/XtermEngine.hpp"
-#include "../renderer/vt/Xterm256Engine.hpp"
-
 #include "../renderer/base/renderer.hpp"
 #include "../types/inc/utils.hpp"
 #include "handle.h" // LockConsole
-#include "input.h" // ProcessCtrlEvents
 #include "output.h" // CloseConsoleProcessState
 
 using namespace Microsoft::Console;
@@ -21,59 +17,42 @@ using namespace Microsoft::Console::Types;
 using namespace Microsoft::Console::Utils;
 using namespace Microsoft::Console::Interactivity;
 
-VtIo::VtIo() :
-    _initialized(false),
-    _lookingForCursorPosition(false),
-    _IoMode(VtIoMode::INVALID)
+VtIo::CorkLock::CorkLock(VtIo* io) noexcept :
+    _io{ io }
 {
 }
 
-// Routine Description:
-//  Tries to get the VtIoMode from the given string. If it's not one of the
-//      *_STRING constants in VtIoMode.hpp, then it returns E_INVALIDARG.
-// Arguments:
-//  VtIoMode: A string containing the console's requested VT mode. This can be
-//      any of the strings in VtIoModes.hpp
-//  pIoMode: receives the VtIoMode that the string represents if it's a valid
-//      IO mode string
-// Return Value:
-//  S_OK if we parsed the string successfully, otherwise E_INVALIDARG indicating failure.
-[[nodiscard]] HRESULT VtIo::ParseIoMode(const std::wstring& VtMode, _Out_ VtIoMode& ioMode)
+VtIo::CorkLock::~CorkLock() noexcept
 {
-    ioMode = VtIoMode::INVALID;
+    if (_io)
+    {
+        _io->_uncork();
+    }
+}
 
-    if (VtMode == XTERM_256_STRING)
+VtIo::CorkLock::CorkLock(CorkLock&& other) :
+    _io{ std::exchange(other._io, nullptr) }
+{
+}
+
+VtIo::CorkLock& VtIo::CorkLock::operator=(CorkLock&& other)
+{
+    if (this != &other)
     {
-        ioMode = VtIoMode::XTERM_256;
+        this->~CorkLock();
+        _io = std::exchange(other._io, nullptr);
     }
-    else if (VtMode == XTERM_STRING)
-    {
-        ioMode = VtIoMode::XTERM;
-    }
-    else if (VtMode == XTERM_ASCII_STRING)
-    {
-        ioMode = VtIoMode::XTERM_ASCII;
-    }
-    else if (VtMode == DEFAULT_STRING)
-    {
-        ioMode = VtIoMode::XTERM_256;
-    }
-    else
-    {
-        return E_INVALIDARG;
-    }
-    return S_OK;
+    return *this;
 }
 
 [[nodiscard]] HRESULT VtIo::Initialize(const ConsoleArguments* const pArgs)
 {
     _lookingForCursorPosition = pArgs->GetInheritCursor();
-    _resizeQuirk = pArgs->IsResizeQuirkEnabled();
 
     // If we were already given VT handles, set up the VT IO engine to use those.
     if (pArgs->InConptyMode())
     {
-        return _Initialize(pArgs->GetVtInHandle(), pArgs->GetVtOutHandle(), pArgs->GetVtMode(), pArgs->GetSignalHandle());
+        return _Initialize(pArgs->GetVtInHandle(), pArgs->GetVtOutHandle(), pArgs->GetSignalHandle());
     }
     // Didn't need to initialize if we didn't have VT stuff. It's still OK, but report we did nothing.
     else
@@ -93,8 +72,6 @@ VtIo::VtIo() :
 //      input events.
 //  OutHandle: a valid file handle. The console
 //      will be "rendered" to this pipe using VT sequences
-//  VtIoMode: A string containing the console's requested VT mode. This can be
-//      any of the strings in VtIoModes.hpp
 //  SignalHandle: an optional file handle that will be used to send signals into the console.
 //      This represents the ability to send signals to a *nix tty/pty.
 // Return Value:
@@ -102,12 +79,9 @@ VtIo::VtIo() :
 //      indicating failure.
 [[nodiscard]] HRESULT VtIo::_Initialize(const HANDLE InHandle,
                                         const HANDLE OutHandle,
-                                        const std::wstring& VtMode,
                                         _In_opt_ const HANDLE SignalHandle)
 {
     FAIL_FAST_IF_MSG(_initialized, "Someone attempted to double-_Initialize VtIo");
-
-    RETURN_IF_FAILED(ParseIoMode(VtMode, _IoMode));
 
     _hInput.reset(InHandle);
     _hOutput.reset(OutHandle);
@@ -119,8 +93,23 @@ VtIo::VtIo() :
     return S_OK;
 }
 
+void VtIo::_uncork()
+{
+    _corked -= 1;
+    _flush();
+}
+
+void VtIo::_flush()
+{
+    if (_corked == 0)
+    {
+        WriteUTF8(_buffer);
+        _buffer.clear();
+    }
+}
+
 // Method Description:
-// - Create the VtRenderer and the VtInputThread for this console.
+// - Create the VtEngine and the VtInputThread for this console.
 // MUST BE DONE AFTER CONSOLE IS INITIALIZED, to make sure we've gotten the
 //  buffer size from the attached client application.
 // Arguments:
@@ -135,57 +124,15 @@ VtIo::VtIo() :
     {
         return S_FALSE;
     }
-    auto& globals = ServiceLocator::LocateGlobals();
 
-    const auto& gci = globals.getConsoleInformation();
     // SetWindowVisibility uses the console lock to protect access to _pVtRenderEngine.
-    assert(gci.IsConsoleLocked());
+    assert(ServiceLocator::LocateGlobals().getConsoleInformation().IsConsoleLocked());
 
     try
     {
         if (IsValidHandle(_hInput.get()))
         {
             _pVtInputThread = std::make_unique<VtInputThread>(std::move(_hInput), _lookingForCursorPosition);
-        }
-
-        if (IsValidHandle(_hOutput.get()))
-        {
-            auto initialViewport = Viewport::FromDimensions({ 0, 0 },
-                                                            gci.GetWindowSize().width,
-                                                            gci.GetWindowSize().height);
-            switch (_IoMode)
-            {
-            case VtIoMode::XTERM_256:
-            {
-                auto xterm256Engine = std::make_unique<Xterm256Engine>(std::move(_hOutput),
-                                                                       initialViewport);
-                _pVtRenderEngine = std::move(xterm256Engine);
-                break;
-            }
-            case VtIoMode::XTERM:
-            {
-                _pVtRenderEngine = std::make_unique<XtermEngine>(std::move(_hOutput),
-                                                                 initialViewport,
-                                                                 false);
-                break;
-            }
-            case VtIoMode::XTERM_ASCII:
-            {
-                _pVtRenderEngine = std::make_unique<XtermEngine>(std::move(_hOutput),
-                                                                 initialViewport,
-                                                                 true);
-                break;
-            }
-            default:
-            {
-                return E_FAIL;
-            }
-            }
-            if (_pVtRenderEngine)
-            {
-                _pVtRenderEngine->SetTerminalOwner(this);
-                _pVtRenderEngine->SetResizeQuirk(_resizeQuirk);
-            }
         }
     }
     CATCH_RETURN();
@@ -215,21 +162,6 @@ bool VtIo::IsUsingVt() const
     {
         return S_FALSE;
     }
-    auto& g = ServiceLocator::LocateGlobals();
-
-    if (_pVtRenderEngine)
-    {
-        try
-        {
-            g.pRender->AddRenderEngine(_pVtRenderEngine.get());
-            g.getConsoleInformation().GetActiveOutputBuffer().SetTerminalConnection(_pVtRenderEngine.get());
-
-            // Force the whole window to be put together first.
-            // We don't really need the handle, we just want to leverage the setup steps.
-            ServiceLocator::LocatePseudoWindow();
-        }
-        CATCH_RETURN();
-    }
 
     // MSFT: 15813316
     // If the terminal application wants us to inherit the cursor position,
@@ -241,9 +173,9 @@ bool VtIo::IsUsingVt() const
     // We need both handles for this initialization to work. If we don't have
     //      both, we'll skip it. They either aren't going to be reading output
     //      (so they can't get the DSR) or they can't write the response to us.
-    if (_lookingForCursorPosition && _pVtRenderEngine && _pVtInputThread)
+    if (_lookingForCursorPosition && _pVtInputThread)
     {
-        LOG_IF_FAILED(_pVtRenderEngine->RequestCursor());
+        //LOG_IF_FAILED(_pVtRenderEngine->RequestCursor());
         while (_lookingForCursorPosition && _pVtInputThread->DoReadInput())
         {
         }
@@ -253,7 +185,8 @@ bool VtIo::IsUsingVt() const
     // win32-input-mode from them. This will enable the connected terminal to
     // send us full INPUT_RECORDs as input. If the terminal doesn't understand
     // this sequence, it'll just ignore it.
-    LOG_IF_FAILED(_pVtRenderEngine->RequestWin32Input());
+    //LOG_IF_FAILED(_pVtRenderEngine->RequestWin32Input());
+    WriteUTF8("\x1b[20h\033[?9001h\033[?1004h");
 
     if (_pVtInputThread)
     {
@@ -297,25 +230,6 @@ void VtIo::CreatePseudoWindow()
     }
 }
 
-void VtIo::SetWindowVisibility(bool showOrHide) noexcept
-{
-    auto& gci = ::Microsoft::Console::Interactivity::ServiceLocator::LocateGlobals().getConsoleInformation();
-
-    gci.LockConsole();
-    auto unlock = wil::scope_exit([&] { gci.UnlockConsole(); });
-
-    // ConsoleInputThreadProcWin32 calls VtIo::CreatePseudoWindow,
-    // which calls CreateWindowExW, which causes a WM_SIZE message.
-    // In short, this function might be called before _pVtRenderEngine exists.
-    // See PtySignalInputThread::CreatePseudoWindow().
-    if (!_pVtRenderEngine)
-    {
-        return;
-    }
-
-    LOG_IF_FAILED(_pVtRenderEngine->SetWindowVisibility(showOrHide));
-}
-
 // Method Description:
 // - Create and start the signal thread. The signal thread can be created
 //      independent of the i/o threads, and doesn't require a client first
@@ -352,57 +266,6 @@ void VtIo::SetWindowVisibility(bool showOrHide) noexcept
     return S_OK;
 }
 
-// Method Description:
-// - Prevent the renderer from emitting output on the next resize. This prevents
-//      the host from echoing a resize to the terminal that requested it.
-// Arguments:
-// - <none>
-// Return Value:
-// - S_OK if the renderer successfully suppressed the next repaint, otherwise an
-//      appropriate HRESULT indicating failure.
-[[nodiscard]] HRESULT VtIo::SuppressResizeRepaint()
-{
-    auto hr = S_OK;
-    if (_pVtRenderEngine)
-    {
-        hr = _pVtRenderEngine->SuppressResizeRepaint();
-    }
-    return hr;
-}
-
-// Method Description:
-// - Attempts to set the initial cursor position, if we're looking for it.
-//      If we're not trying to inherit the cursor, does nothing.
-// Arguments:
-// - coordCursor: The initial position of the cursor.
-// Return Value:
-// - S_OK if we successfully inherited the cursor or did nothing, else an
-//      appropriate HRESULT
-[[nodiscard]] HRESULT VtIo::SetCursorPosition(const til::point coordCursor)
-{
-    auto hr = S_OK;
-    if (_lookingForCursorPosition)
-    {
-        if (_pVtRenderEngine)
-        {
-            hr = _pVtRenderEngine->InheritCursor(coordCursor);
-        }
-
-        _lookingForCursorPosition = false;
-    }
-    return hr;
-}
-
-[[nodiscard]] HRESULT VtIo::SwitchScreenBuffer(const bool useAltBuffer)
-{
-    auto hr = S_OK;
-    if (_pVtRenderEngine)
-    {
-        hr = _pVtRenderEngine->SwitchScreenBuffer(useAltBuffer);
-    }
-    return hr;
-}
-
 void VtIo::CloseInput()
 {
     _pVtInputThread = nullptr;
@@ -411,8 +274,7 @@ void VtIo::CloseInput()
 
 void VtIo::CloseOutput()
 {
-    auto& g = ServiceLocator::LocateGlobals();
-    g.getConsoleInformation().GetActiveOutputBuffer().SetTerminalConnection(nullptr);
+    _hOutput.reset();
 }
 
 void VtIo::SendCloseEvent()
@@ -429,71 +291,40 @@ void VtIo::SendCloseEvent()
     }
 }
 
-// The name of this method is an analogy to TCP_CORK. It instructs
-// the VT renderer to stop flushing its buffer to the output pipe.
-// Don't forget to uncork it!
-void VtIo::CorkRenderer(bool corked) const noexcept
+VtIo::CorkLock VtIo::Cork() noexcept
 {
-    _pVtRenderEngine->Cork(corked);
+    _corked += 1;
+    return CorkLock{ this };
 }
 
-#ifdef UNIT_TESTING
-// Method Description:
-// - This is a test helper method. It can be used to trick VtIo into responding
-//   true to `IsUsingVt`, which will cause the console host to act in conpty
-//   mode.
-// Arguments:
-// - vtRenderEngine: a VT renderer that our VtIo should use as the vt engine during these tests
-// Return Value:
-// - <none>
-void VtIo::EnableConptyModeForTests(std::unique_ptr<Microsoft::Console::Render::VtEngine> vtRenderEngine, const bool resizeQuirk)
+void VtIo::WriteUTF8(const std::string_view& str)
 {
-    _initialized = true;
-    _resizeQuirk = resizeQuirk;
-    _pVtRenderEngine = std::move(vtRenderEngine);
-}
-#endif
-
-// Method Description:
-// - Returns true if the Resize Quirk is enabled. This changes the behavior of
-//   conpty to _not_ InvalidateAll the entire viewport on a resize operation.
-//   This is used by the Windows Terminal, because it is prepared to be
-//   connected to a conpty, and handles its own buffer specifically for a
-//   conpty scenario.
-// - See also: GH#3490, #4354, #4741
-// Arguments:
-// - <none>
-// Return Value:
-// - true iff we were started with the `--resizeQuirk` flag enabled.
-bool VtIo::IsResizeQuirkEnabled() const
-{
-    return _resizeQuirk;
-}
-
-// Method Description:
-// - Manually tell the renderer that it should emit a "Erase Scrollback"
-//   sequence to the connected terminal. We need to do this in certain cases
-//   that we've identified where we believe the client wanted the entire
-//   terminal buffer cleared, not just the viewport. For more information, see
-//   GH#3126.
-// Arguments:
-// - <none>
-// Return Value:
-// - S_OK if we wrote the sequences successfully, otherwise an appropriate HRESULT
-[[nodiscard]] HRESULT VtIo::ManuallyClearScrollback() const noexcept
-{
-    if (_pVtRenderEngine)
+    if (str.empty() || !_hOutput)
     {
-        return _pVtRenderEngine->ManuallyClearScrollback();
+        return;
     }
-    return S_OK;
+
+    if (_corked > 0)
+    {
+        _buffer.append(str);
+        return;
+    }
+
+    const auto fSuccess = WriteFile(_hOutput.get(), str.data(), gsl::narrow_cast<DWORD>(str.size()), nullptr, nullptr);
+    if (!fSuccess)
+    {
+        LOG_LAST_ERROR();
+        CloseOutput();
+    }
 }
 
-[[nodiscard]] HRESULT VtIo::RequestMouseMode(bool enable) const noexcept
+void VtIo::WriteUTF16(const std::wstring_view& str)
 {
-    if (_pVtRenderEngine)
+    if (str.empty() || !_hOutput)
     {
-        return _pVtRenderEngine->RequestMouseMode(enable);
+        return;
     }
-    return S_OK;
+
+    const auto str8 = til::u16u8(str);
+    WriteUTF8(str8);
 }

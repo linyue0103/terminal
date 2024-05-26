@@ -9,6 +9,7 @@ using namespace Microsoft::Console;
 using namespace std::string_view_literals;
 
 static constexpr std::array<til::color, 256> standard256ColorTable{
+    // The first 16 colors are the standard ANSI colors. This is the Campbell color scheme.
     til::color{ 0x0C, 0x0C, 0x0C },
     til::color{ 0xC5, 0x0F, 0x1F },
     til::color{ 0x13, 0xA1, 0x0E },
@@ -25,6 +26,7 @@ static constexpr std::array<til::color, 256> standard256ColorTable{
     til::color{ 0xB4, 0x00, 0x9E },
     til::color{ 0x61, 0xD6, 0xD6 },
     til::color{ 0xF2, 0xF2, 0xF2 },
+    // The next 216 colors are a 6x6x6 color cube, where each axis is [0x00, 0x5F, 0x87, 0xAF, 0xD7, 0xFF].
     til::color{ 0x00, 0x00, 0x00 },
     til::color{ 0x00, 0x00, 0x5F },
     til::color{ 0x00, 0x00, 0x87 },
@@ -241,6 +243,7 @@ static constexpr std::array<til::color, 256> standard256ColorTable{
     til::color{ 0xFF, 0xFF, 0xAF },
     til::color{ 0xFF, 0xFF, 0xD7 },
     til::color{ 0xFF, 0xFF, 0xFF },
+    // The last 24 colors are a grayscale ramp.
     til::color{ 0x08, 0x08, 0x08 },
     til::color{ 0x12, 0x12, 0x12 },
     til::color{ 0x1C, 0x1C, 0x1C },

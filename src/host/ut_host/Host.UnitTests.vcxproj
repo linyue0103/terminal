@@ -31,8 +31,6 @@
     <ClCompile Include="InputBufferTests.cpp" />
     <ClCompile Include="ViewportTests.cpp" />
     <ClCompile Include="VtIoTests.cpp" />
-    <ClCompile Include="VtRendererTests.cpp" />
-    <ClCompile Include="ConptyOutputTests.cpp" />
     <ClCompile Include="..\precomp.cpp">
       <PrecompiledHeader>Create</PrecompiledHeader>
     </ClCompile>

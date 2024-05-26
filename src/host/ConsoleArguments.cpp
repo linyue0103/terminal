@@ -19,7 +19,6 @@ const std::wstring_view ConsoleArguments::FILEPATH_LEADER_PREFIX = L"\\??\\";
 const std::wstring_view ConsoleArguments::WIDTH_ARG = L"--width";
 const std::wstring_view ConsoleArguments::HEIGHT_ARG = L"--height";
 const std::wstring_view ConsoleArguments::INHERIT_CURSOR_ARG = L"--inheritcursor";
-const std::wstring_view ConsoleArguments::RESIZE_QUIRK = L"--resizeQuirk";
 const std::wstring_view ConsoleArguments::FEATURE_ARG = L"--feature";
 const std::wstring_view ConsoleArguments::FEATURE_PTY_ARG = L"pty";
 const std::wstring_view ConsoleArguments::COM_SERVER_ARG = L"-Embedding";
@@ -501,12 +500,6 @@ void ConsoleArguments::s_ConsumeArg(_Inout_ std::vector<std::wstring>& args, _In
             s_ConsumeArg(args, i);
             hr = S_OK;
         }
-        else if (arg == RESIZE_QUIRK)
-        {
-            _resizeQuirk = true;
-            s_ConsumeArg(args, i);
-            hr = S_OK;
-        }
         else if (arg == CLIENT_COMMANDLINE_ARG)
         {
             // Everything after this is the explicit commandline
@@ -516,6 +509,10 @@ void ConsoleArguments::s_ConsumeArg(_Inout_ std::vector<std::wstring>& args, _In
         // TODO: handle the rest of the possible params (MSFT:13271366, MSFT:13631640)
         // TODO: handle invalid args
         //  e.g. "conhost --foo bar" should not make the clientCommandline "--foo bar"
+        else if (til::starts_with(arg, L"--"))
+        {
+            hr = S_FALSE; // Ignore this unrecognized --argument.
+        }
         else
         {
             // If we encounter something that doesn't match one of our other
@@ -625,11 +622,6 @@ std::wstring ConsoleArguments::GetClientCommandline() const
     return _clientCommandline;
 }
 
-std::wstring ConsoleArguments::GetVtMode() const
-{
-    return _vtMode;
-}
-
 bool ConsoleArguments::GetForceV1() const
 {
     return _forceV1;
@@ -653,10 +645,6 @@ short ConsoleArguments::GetHeight() const
 bool ConsoleArguments::GetInheritCursor() const
 {
     return _inheritCursor;
-}
-bool ConsoleArguments::IsResizeQuirkEnabled() const
-{
-    return _resizeQuirk;
 }
 
 #ifdef UNIT_TESTING

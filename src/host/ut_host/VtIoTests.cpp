@@ -9,8 +9,6 @@
 #include "../VtIo.hpp"
 #include "../../interactivity/inc/ServiceLocator.hpp"
 #include "../../renderer/base/Renderer.hpp"
-#include "../../renderer/vt/Xterm256Engine.hpp"
-#include "../../renderer/vt/XtermEngine.hpp"
 
 using namespace WEX::Common;
 using namespace WEX::Logging;
@@ -26,11 +24,6 @@ class Microsoft::Console::VirtualTerminal::VtIoTests
     // General Tests:
     TEST_METHOD(NoOpStartTest);
     TEST_METHOD(ModeParsingTest);
-
-    TEST_METHOD(DtorTestJustEngine);
-    TEST_METHOD(DtorTestDeleteVtio);
-    TEST_METHOD(DtorTestStackAlloc);
-    TEST_METHOD(DtorTestStackAllocMany);
 
     TEST_METHOD(RendererDtorAndThread);
 
@@ -51,25 +44,6 @@ void VtIoTests::NoOpStartTest()
     VERIFY_SUCCEEDED(vtio.StartIfNeeded());
 }
 
-void VtIoTests::ModeParsingTest()
-{
-    VtIoMode mode;
-    VERIFY_SUCCEEDED(VtIo::ParseIoMode(L"xterm", mode));
-    VERIFY_ARE_EQUAL(mode, VtIoMode::XTERM);
-
-    VERIFY_SUCCEEDED(VtIo::ParseIoMode(L"xterm-256color", mode));
-    VERIFY_ARE_EQUAL(mode, VtIoMode::XTERM_256);
-
-    VERIFY_SUCCEEDED(VtIo::ParseIoMode(L"xterm-ascii", mode));
-    VERIFY_ARE_EQUAL(mode, VtIoMode::XTERM_ASCII);
-
-    VERIFY_SUCCEEDED(VtIo::ParseIoMode(L"", mode));
-    VERIFY_ARE_EQUAL(mode, VtIoMode::XTERM_256);
-
-    VERIFY_FAILED(VtIo::ParseIoMode(L"garbage", mode));
-    VERIFY_ARE_EQUAL(mode, VtIoMode::INVALID);
-}
-
 Viewport SetUpViewport()
 {
     til::inclusive_rect view;
@@ -78,172 +52,6 @@ Viewport SetUpViewport()
     view.right = 79;
 
     return Viewport::FromInclusive(view);
-}
-
-void VtIoTests::DtorTestJustEngine()
-{
-    Log::Comment(NoThrowString().Format(
-        L"This test is going to instantiate a bunch of VtIos in different \n"
-        L"scenarios to see if something causes a weird cleanup.\n"
-        L"It's here because of the strange nature of VtEngine having members\n"
-        L"that are only defined in UNIT_TESTING"));
-
-    Log::Comment(NoThrowString().Format(
-        L"New some engines and delete them"));
-    for (auto i = 0; i < 25; ++i)
-    {
-        Log::Comment(NoThrowString().Format(
-            L"New/Delete loop #%d", i));
-
-        wil::unique_hfile hOutputFile;
-        hOutputFile.reset(INVALID_HANDLE_VALUE);
-        auto pRenderer256 = new Xterm256Engine(std::move(hOutputFile), SetUpViewport());
-        Log::Comment(NoThrowString().Format(L"Made Xterm256Engine"));
-        delete pRenderer256;
-        Log::Comment(NoThrowString().Format(L"Deleted."));
-
-        hOutputFile.reset(INVALID_HANDLE_VALUE);
-
-        auto pRenderEngineXterm = new XtermEngine(std::move(hOutputFile), SetUpViewport(), false);
-        Log::Comment(NoThrowString().Format(L"Made XtermEngine"));
-        delete pRenderEngineXterm;
-        Log::Comment(NoThrowString().Format(L"Deleted."));
-
-        hOutputFile.reset(INVALID_HANDLE_VALUE);
-
-        auto pRenderEngineXtermAscii = new XtermEngine(std::move(hOutputFile), SetUpViewport(), true);
-        Log::Comment(NoThrowString().Format(L"Made XtermEngine"));
-        delete pRenderEngineXtermAscii;
-        Log::Comment(NoThrowString().Format(L"Deleted."));
-    }
-}
-
-void VtIoTests::DtorTestDeleteVtio()
-{
-    Log::Comment(NoThrowString().Format(
-        L"This test is going to instantiate a bunch of VtIos in different \n"
-        L"scenarios to see if something causes a weird cleanup.\n"
-        L"It's here because of the strange nature of VtEngine having members\n"
-        L"that are only defined in UNIT_TESTING"));
-
-    Log::Comment(NoThrowString().Format(
-        L"New some engines and delete them"));
-    for (auto i = 0; i < 25; ++i)
-    {
-        Log::Comment(NoThrowString().Format(
-            L"New/Delete loop #%d", i));
-
-        auto hOutputFile = wil::unique_hfile(INVALID_HANDLE_VALUE);
-
-        hOutputFile.reset(INVALID_HANDLE_VALUE);
-
-        auto vtio = new VtIo();
-        Log::Comment(NoThrowString().Format(L"Made VtIo"));
-        vtio->_pVtRenderEngine = std::make_unique<Xterm256Engine>(std::move(hOutputFile),
-                                                                  SetUpViewport());
-        Log::Comment(NoThrowString().Format(L"Made Xterm256Engine"));
-        delete vtio;
-        Log::Comment(NoThrowString().Format(L"Deleted."));
-
-        hOutputFile = wil::unique_hfile(INVALID_HANDLE_VALUE);
-        vtio = new VtIo();
-        Log::Comment(NoThrowString().Format(L"Made VtIo"));
-        vtio->_pVtRenderEngine = std::make_unique<XtermEngine>(std::move(hOutputFile),
-                                                               SetUpViewport(),
-                                                               false);
-        Log::Comment(NoThrowString().Format(L"Made XtermEngine"));
-        delete vtio;
-        Log::Comment(NoThrowString().Format(L"Deleted."));
-
-        hOutputFile = wil::unique_hfile(INVALID_HANDLE_VALUE);
-        vtio = new VtIo();
-        Log::Comment(NoThrowString().Format(L"Made VtIo"));
-        vtio->_pVtRenderEngine = std::make_unique<XtermEngine>(std::move(hOutputFile),
-                                                               SetUpViewport(),
-                                                               true);
-        Log::Comment(NoThrowString().Format(L"Made XtermEngine"));
-        delete vtio;
-        Log::Comment(NoThrowString().Format(L"Deleted."));
-    }
-}
-
-void VtIoTests::DtorTestStackAlloc()
-{
-    Log::Comment(NoThrowString().Format(
-        L"This test is going to instantiate a bunch of VtIos in different \n"
-        L"scenarios to see if something causes a weird cleanup.\n"
-        L"It's here because of the strange nature of VtEngine having members\n"
-        L"that are only defined in UNIT_TESTING"));
-
-    Log::Comment(NoThrowString().Format(
-        L"make some engines and let them fall out of scope"));
-    for (auto i = 0; i < 25; ++i)
-    {
-        Log::Comment(NoThrowString().Format(
-            L"Scope Exit Auto cleanup #%d", i));
-
-        wil::unique_hfile hOutputFile;
-
-        hOutputFile.reset(INVALID_HANDLE_VALUE);
-        {
-            VtIo vtio;
-            vtio._pVtRenderEngine = std::make_unique<Xterm256Engine>(std::move(hOutputFile),
-                                                                     SetUpViewport());
-        }
-
-        hOutputFile.reset(INVALID_HANDLE_VALUE);
-        {
-            VtIo vtio;
-            vtio._pVtRenderEngine = std::make_unique<XtermEngine>(std::move(hOutputFile),
-                                                                  SetUpViewport(),
-                                                                  false);
-        }
-
-        hOutputFile.reset(INVALID_HANDLE_VALUE);
-        {
-            VtIo vtio;
-            vtio._pVtRenderEngine = std::make_unique<XtermEngine>(std::move(hOutputFile),
-                                                                  SetUpViewport(),
-                                                                  true);
-        }
-    }
-}
-
-void VtIoTests::DtorTestStackAllocMany()
-{
-    Log::Comment(NoThrowString().Format(
-        L"This test is going to instantiate a bunch of VtIos in different \n"
-        L"scenarios to see if something causes a weird cleanup.\n"
-        L"It's here because of the strange nature of VtEngine having members\n"
-        L"that are only defined in UNIT_TESTING"));
-
-    Log::Comment(NoThrowString().Format(
-        L"Try an make a whole bunch all at once, and have them all fall out of scope at once."));
-    for (auto i = 0; i < 25; ++i)
-    {
-        Log::Comment(NoThrowString().Format(
-            L"Multiple engines, one scope loop #%d", i));
-
-        wil::unique_hfile hOutputFile;
-        {
-            hOutputFile.reset(INVALID_HANDLE_VALUE);
-            VtIo vtio1;
-            vtio1._pVtRenderEngine = std::make_unique<Xterm256Engine>(std::move(hOutputFile),
-                                                                      SetUpViewport());
-
-            hOutputFile.reset(INVALID_HANDLE_VALUE);
-            VtIo vtio2;
-            vtio2._pVtRenderEngine = std::make_unique<XtermEngine>(std::move(hOutputFile),
-                                                                   SetUpViewport(),
-                                                                   false);
-
-            hOutputFile.reset(INVALID_HANDLE_VALUE);
-            VtIo vtio3;
-            vtio3._pVtRenderEngine = std::make_unique<XtermEngine>(std::move(hOutputFile),
-                                                                   SetUpViewport(),
-                                                                   true);
-        }
-    }
 }
 
 class MockRenderData : public IRenderData

@@ -117,7 +117,7 @@ SCREEN_INFORMATION::~SCREEN_INFORMATION()
                                                             defaultAttributes,
                                                             uiCursorSize,
                                                             pScreen->IsActiveScreenBuffer(),
-                                                            *ServiceLocator::LocateGlobals().pRender);
+                                                            ServiceLocator::LocateGlobals().pRender);
 
         const auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
         pScreen->_textBuffer->GetCursor().SetType(gci.GetCursorType());
@@ -256,7 +256,7 @@ void SCREEN_INFORMATION::s_RemoveScreenBuffer(_In_ SCREEN_INFORMATION* const pSc
         auto& renderer = *g.pRender;
         auto& renderSettings = gci.GetRenderSettings();
         auto& terminalInput = gci.GetActiveInputBuffer()->GetTerminalInput();
-        auto adapter = std::make_unique<AdaptDispatch>(_api, renderer, renderSettings, terminalInput);
+        auto adapter = std::make_unique<AdaptDispatch>(_api, &renderer, renderSettings, terminalInput);
         auto engine = std::make_unique<OutputStateMachineEngine>(std::move(adapter));
         // Note that at this point in the setup, we haven't determined if we're
         //      in VtIo mode or not yet. We'll set the OutputStateMachine's
@@ -1195,21 +1195,6 @@ void SCREEN_INFORMATION::_InternalSetViewportSize(const til::size* const pcoordS
 
     _viewport = newViewport;
     Tracing::s_TraceWindowViewport(_viewport);
-
-    // In Conpty mode, call TriggerScroll here without params. By not providing
-    // params, the renderer will make sure to update the VtEngine with the
-    // updated viewport size. If we don't do this, the engine can get into a
-    // torn state on this frame.
-    //
-    // Without this statement, the engine won't be told about the new view size
-    // till the start of the next frame. If any other text gets output before
-    // that frame starts, there's a very real chance that it'll cause errors as
-    // the engine tries to invalidate those regions.
-    const auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
-    if (gci.IsInVtIoMode() && ServiceLocator::LocateGlobals().pRender)
-    {
-        ServiceLocator::LocateGlobals().pRender->TriggerScroll();
-    }
 }
 
 // Routine Description:
@@ -1899,15 +1884,6 @@ void SCREEN_INFORMATION::_handleDeferredResize(SCREEN_INFORMATION& siMain)
             s_RemoveScreenBuffer(psiOldAltBuffer); // this will also delete the old alt buffer
         }
 
-        // GH#381: When we switch into the alt buffer:
-        //  * flush the current frame, to clear out anything that we prepared for this buffer.
-        //  * Emit a ?1049h/l to the remote side, to let them know that we've switched buffers.
-        if (gci.IsInVtIoMode() && ServiceLocator::LocateGlobals().pRender)
-        {
-            ServiceLocator::LocateGlobals().pRender->TriggerFlush(false);
-            LOG_IF_FAILED(gci.GetVtIo()->SwitchScreenBuffer(true));
-        }
-
         ::SetActiveScreenBuffer(*psiNewAltBuffer);
 
         // Kind of a hack until we have proper signal channels: If the client app wants window size events, send one for
@@ -1934,15 +1910,6 @@ void SCREEN_INFORMATION::UseMainScreenBuffer()
     if (psiMain != nullptr)
     {
         _handleDeferredResize(*psiMain);
-
-        // GH#381: When we switch into the main buffer:
-        //  * flush the current frame, to clear out anything that we prepared for this buffer.
-        //  * Emit a ?1049h/l to the remote side, to let them know that we've switched buffers.
-        if (gci.IsInVtIoMode() && ServiceLocator::LocateGlobals().pRender)
-        {
-            ServiceLocator::LocateGlobals().pRender->TriggerFlush(false);
-            LOG_IF_FAILED(gci.GetVtIo()->SwitchScreenBuffer(false));
-        }
 
         ::SetActiveScreenBuffer(*psiMain);
         psiMain->UpdateScrollBars(); // The alt had disabled scrollbars, re-enable them
@@ -2178,50 +2145,12 @@ void SCREEN_INFORMATION::SetViewport(const Viewport& newViewport,
 // - S_OK
 [[nodiscard]] HRESULT SCREEN_INFORMATION::ClearBuffer()
 {
-    // Rotate the buffer to bring the cursor row to the top of the viewport.
-    const auto cursorPos = _textBuffer->GetCursor().GetPosition();
-    for (auto i = 0; i < cursorPos.y; i++)
-    {
-        _textBuffer->IncrementCircularBuffer();
-    }
-
-    // Erase everything below that point.
-    RETURN_IF_FAILED(SetCursorPosition({ 0, 1 }, false));
-    auto& engine = reinterpret_cast<OutputStateMachineEngine&>(_stateMachine->Engine());
-    engine.Dispatch().EraseInDisplay(DispatchTypes::EraseType::ToEnd);
-
+    _textBuffer->Reset();
     // Restore the original cursor x offset, but now on the first row.
-    RETURN_IF_FAILED(SetCursorPosition({ cursorPos.x, 0 }, false));
-
+    _textBuffer->GetCursor().SetYPosition(0);
     _textBuffer->TriggerRedrawAll();
 
     return S_OK;
-}
-
-// Method Description:
-// - Sets up the Output state machine to be in pty mode. Sequences it doesn't
-//      understand will be written to the pTtyConnection passed in here.
-// Arguments:
-// - pTtyConnection: This is a TerminalOutputConnection that we can write the
-//      sequence we didn't understand to.
-// Return Value:
-// - <none>
-void SCREEN_INFORMATION::SetTerminalConnection(_In_ VtEngine* const pTtyConnection)
-{
-    auto& engine = reinterpret_cast<OutputStateMachineEngine&>(_stateMachine->Engine());
-    if (pTtyConnection)
-    {
-        engine.SetTerminalConnection(pTtyConnection,
-                                     [&stateMachine = *_stateMachine]() -> bool {
-                                         ServiceLocator::LocateGlobals().pRender->NotifyPaintFrame();
-                                         return stateMachine.FlushToTerminal();
-                                     });
-    }
-    else
-    {
-        engine.SetTerminalConnection(nullptr,
-                                     nullptr);
-    }
 }
 
 // Routine Description:

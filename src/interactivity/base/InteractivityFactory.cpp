@@ -499,7 +499,9 @@ void InteractivityFactory::_WritePseudoWindowCallback(bool showOrHide)
     auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
     if (const auto io = gci.GetVtIo())
     {
-        io->SetWindowVisibility(showOrHide);
+        char buf[] = "\x1b[1t";
+        buf[2] = showOrHide ? '1' : '2';
+        io->WriteUTF8(buf);
     }
 }
 
