@@ -350,6 +350,18 @@ void WriteCharsLegacy(SCREEN_INFORMATION& screenInfo, const std::wstring_view& t
     }
 }
 
+void WriteCharsVT(SCREEN_INFORMATION& screenInfo, const std::wstring_view& str)
+{
+    auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
+
+    screenInfo.GetStateMachine().ProcessString(str);
+
+    if (gci.IsInVtIoMode())
+    {
+        gci.GetVtIo()->WriteUTF16(str);
+    }
+}
+
 // Routine Description:
 // - Takes the given text and inserts it into the given screen buffer.
 // Note:
@@ -402,12 +414,7 @@ try
     }
     else
     {
-        screenInfo.GetStateMachine().ProcessString(str);
-
-        if (gci.IsInVtIoMode())
-        {
-            gci.GetVtIo()->WriteUTF16(str);
-        }
+        WriteCharsVT(screenInfo, str);
     }
 
     return STATUS_SUCCESS;

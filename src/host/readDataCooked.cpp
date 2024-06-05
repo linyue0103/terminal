@@ -79,6 +79,15 @@ void COOKED_READ_DATA::BufferState::MarkAsClean() noexcept
     _dirtyBeg = npos;
 }
 
+void COOKED_READ_DATA::BufferState::Suspend(bool suspended) noexcept
+{
+    if (_suspended != suspended)
+    {
+        _suspended = suspended;
+        MarkEverythingDirty();
+    }
+}
+
 std::wstring_view COOKED_READ_DATA::BufferState::GetUnmodifiedTextBeforeCursor() const noexcept
 {
     return _slice(0, std::min(_dirtyBeg, _cursor));
@@ -101,6 +110,11 @@ std::wstring_view COOKED_READ_DATA::BufferState::GetModifiedTextAfterCursor() co
 
 std::wstring_view COOKED_READ_DATA::BufferState::_slice(size_t from, size_t to) const noexcept
 {
+    if (_suspended)
+    {
+        return {};
+    }
+
     to = std::min(to, _buffer.size());
     from = std::min(from, to);
     return std::wstring_view{ _buffer.data() + from, to - from };
@@ -1162,20 +1176,14 @@ try
         contentOrigin,
         contentSize,
     };
-    const auto backupRect = Viewport::FromExclusive({
-        contentRect.left - 1,
-        contentRect.top - 1,
-        contentRect.right + 1,
-        contentRect.bottom + 1,
-    });
 
-    auto& popup = _popups.emplace_back(kind, contentRect, backupRect, std::vector<CHAR_INFO>{ widthSizeT * heightSizeT });
+    auto& popup = _popups.emplace_back(kind, contentRect);
 
     // Create a backup of the TextBuffer parts we're scribbling over.
     // We need to flush the buffer to ensure we capture the latest contents.
     // NOTE: This may theoretically modify popup.backupRect (practically unlikely).
+    _buffer.Suspend(true);
     _flushBuffer();
-    THROW_IF_FAILED(ServiceLocator::LocateGlobals().api->ReadConsoleOutputWImpl(_screenInfo, popup.backup, backupRect, popup.backupRect));
 
     // Draw the border around our content and fill it with whitespace to prepare it for future usage.
     {
@@ -1269,6 +1277,9 @@ void COOKED_READ_DATA::_popupsDone()
 
     // Restore cursor blinking.
     _screenInfo.GetTextBuffer().GetCursor().SetIsPopupShown(false);
+    
+    _buffer.Suspend(false);
+    _flushBuffer();
 }
 
 void COOKED_READ_DATA::_popupHandleInput(wchar_t wch, uint16_t vkey, DWORD modifiers)

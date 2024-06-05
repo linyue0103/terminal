@@ -315,28 +315,32 @@ This step is somewhat difficult to visualize, but the basic idea is that instead
 
 ### API Design
 
+> [!IMPORTANT]
+> The following API design is a rough draft to convey the idea. It does not represent a complete, finished design. This document will be updated once work on the API begins and the actual requirements become clearer.
+
 ```cs
 // The Console API is built around a freely addressable frame buffer. It allows you to
 // address any part of the buffer, even those outside of what's considered the "viewport".
-// Consequentially, ConPTY supports this and `CONPTY_COORD` instances are relative to the Console Buffer:
+// Consequentially, ConPTY supports this and all `CONPTY_COORD`s are relative to this buffer.
+// The VT viewport may be any vertical section of that console buffer. For instance:
 //
-//                       ┌──────────────────┐    ╮
-//                       │y=-3              │    │
+//                       ┌──────────────────┐
+//                       │y=-3              │
+//                       │                  │    ╮
 //                       │                  │    │
-//                       │                  │    │
-//                    ╭  ├──────────────────┤    ├── VT scrollback
+//                    ╭  ├──────────────────┤    ├── VT scrollback (partially addressed)
 //                    │  │y=0               │    │
-//                    │  │                  │    │
-//                    │  │                  │    │
-//   Console Buffer ──┤  ├──────────────────┤  ╮ ╯
-//                    │  │y=3               │  │
-//                    │  │                  │  ├──── VT Viewport
+//                    │  │                  │  ╮ ╯
 //                    │  │                  │  │
-//                    ╰  └──────────────────┘  ╯
+//   Console Buffer ──┤  ├──────────────────┤  ├──── VT Viewport (top y = 1)
+//                    │  │y=3               │  │
+//                    │  │                  │  ╯
+//                    │  │                  │
+//                    ╰  └──────────────────┘
 //
 // The good news is that nothing prevents you from giving the Console Buffer the exact
-// same size as the VT Viewport and for modern terminals doing so is recommended.
-// That way, `CONPTY_COORD` instances are all viewport-relative:
+// same size as the VT Viewport and for modern terminals doing so is recommended. That way, `CONPTY_COORD`
+// instances are all viewport-relative and content below/above the viewport is never addressed:
 //
 //                       ┌──────────────────┐    ╮
 //                       │y=-3              │    │
@@ -351,7 +355,7 @@ This step is somewhat difficult to visualize, but the basic idea is that instead
 // Coordinates are 0-indexed. Note that while INT32 coordinates are used by this API, coordinates below
 // 0 and above 65535 are generally invalid, as the Console ABI currently uses unsigned 16-Bit integers.
 //
-// You should still always perform input validation and return E_INVALIDARG for invalid coordinates.
+// You should always perform input validation and return E_INVALIDARG for invalid coordinates.
 struct CONPTY_COORD {
     INT32 x;
     INT32 y;
@@ -431,20 +435,22 @@ struct CONPTY_INFO {
     boolean cursorHidden;
 };
 
+// Any item that has changed relative to the current CONPTY_INFO will be set to a non-null pointer.
+// In other words, members that are null represent those that remain unchanged.
 struct CONPTY_INFO_CHANGE {
-    CONPTY_COORD bufferSize;
-    CONPTY_COORD cursorPosition;
-    CONPTY_COORD viewPosition;
-    CONPTY_COORD viewSize;
-    COLORREF colorTable[16];
+    CONPTY_COORD* bufferSize;
+    CONPTY_COORD* cursorPosition;
+    CONPTY_COORD* viewPosition;
+    CONPTY_COORD* viewSize;
+    COLORREF* colorTable; // The referenced array is always 16 items large.
 
-    float cursorHeight;
-    boolean cursorHidden;
+    float* cursorHeight;
+    boolean* cursorHidden;
 
     [string] const wchar_t* fontName;
-    UINT32 fontFamily;
-    UINT32 fontWeight;
-    CONPTY_COORD fontSize;
+    UINT32* fontFamily;
+    UINT32* fontWeight;
+    CONPTY_COORD* fontSize;
 };
 
 interface IConsole {
@@ -453,15 +459,7 @@ interface IConsole {
 
 // First of all: You don't need to implement all functions and all structs perfectly for ConPTY to work decently well.
 // For instance, if you don't implement `CONPTY_INFO::cursorHeight` properly, barely anything will happen.
-//
-// If you start implementing this interface, consider ignoring most `Set*()` calls, return sensible defaults in the `Get*()` and `Read*()` calls,
-// and simply
-//
 interface IConsoleCallback {
-    //
-    // The following methods are the most important parts of this interface and should be implemented first.
-    //
-
     // The console server is single-threaded and no two calls will be made simultaneously. These two functions
     // simply allow you to synchronize the calls down below if your application is multi-threaded.
     //
@@ -486,21 +484,10 @@ interface IConsoleCallback {
     // while updating those that change very often only once this method is called (e.g. the `cursorPosition`).
     const CONPTY_INFO* GetInfo();
 
-    HRESULT SetCursorPosition([in] CONPTY_COORD pos);
-    HRESULT SetCurrentAttributes([in] UINT16 attributes);
-
-    // UTF8 and UTF16 are both widely used text encodings on Windows and it's recommended that both functions are reasonably fast.
-    // ConPTY will translate all non-Unicode text to UTF16 for you.
-    // You must validate incoming text. It's recommended to replace invalid codepoints with U+FFFD.
-    // You don't need to check for broken up codepoints at the start/end of the text, because ConPTY will handle that for you.
-    HRESULT WriteUTF8([in, string, length_is(count)] const char* text, [in] DWORD count);
-    HRESULT WriteUTF16([in, string, length_is(count)] const wchar_t* text, [in] DWORD count);
-
-    //
-    // The following methods are much less important.
-    //
-
-    HRESULT SetInfo([in] const CONPTY_INFO* info);
+    // In short, when this method is called you're asked to apply any non-null member of the given CONPTY_INFO_CHANGE
+    // struct to the terminal. For instance a non-null `.cursorPosition` is identical to calling `SetCursorPosition`,
+    // a non-null `.bufferSize` is a request to resize the terminal, and so on.
+    HRESULT SetInfo([in] const CONPTY_INFO_CHANGE* info);
 
     // Starting from column `pos.x` in row `pos.y`, this reads `columns`-many characters and attributes.
     // `pos` and `columns` will be clamped such that reads never extend outside of the `CONPTY_INFO::bufferSize`.
@@ -509,6 +496,48 @@ interface IConsoleCallback {
     // Such reads should not fail. Simply fill the `infos` array with whitespaces and a default attribute of your chosing,
     // but `FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED` is recommended (no other bits set).
     HRESULT ReadBuffer([in] CONPTY_COORD pos, [in] INT32 columns, [out, length_is(columns)] CONPTY_CHAR_INFO* infos);
+
+    // Starting from column `pos.x` in row `pos.y`, this reads `columns`-many characters and attributes.
+    // `pos` and `columns` will be clamped such that reads never extend outside of the `CONPTY_INFO::bufferSize`.
+    //
+    // However, it may still read cells that have never been written to (for instance below the current viewport!).
+    // Such reads should not fail. Simply fill the `infos` array with whitespaces and a default attribute of your chosing,
+    // but `FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED` is recommended (no other bits set).
+    HRESULT ReadBuffer([in] CONPTY_COORD pos, [in] INT32 columns, [out, length_is(columns)] CONPTY_CHAR_INFO* infos);
+
+    // As explained in the CONPTY_COORD documentation, ConPTY coordinates may be outside of the VT viewport.
+    // This function is necessary in order to support this. If you assign the console buffer the same size
+    // as the VT viewport, `pos` can be translated to VT using `printf("\x1b[%d;%dC", pos.y + 1, pos.x + 1)`.
+    HRESULT SetCursorPosition([in] CONPTY_COORD pos);
+
+    // The Console API's supports 4 gridline attributes which cannot be translated to VT.
+    // This function is necessary in order to support this. If you don't plan to support those gridlines,
+    // you can translate the attributes to VT with the following code or some equivalent:
+    //   static const uint8_t lut[] = { 30, 34, 32, 36, 31, 35, 33, 37, 90, 94, 92, 96, 91, 95, 93, 97 };
+    //   const auto fg = lut[attributes & 0xf];
+    //   const auto bg = lut[(attributes >> 4) & 0xf] + 10;
+    //   printf("\x1b[{};{}m", fg, bg);
+    // You may also choose to support COMMON_LVB_REVERSE_VIDEO, which translates to `printf("\x1b[7m")`.
+    HRESULT SetCurrentAttributes([in] UINT16 attributes);
+
+    // Starting from column `pos.x` in row `pos.y`, this reads `count`-many characters and attributes.
+    // `pos` and `count` will be clamped such that reads never extend outside of the `CONPTY_INFO::bufferSize`.
+    //
+    // However, it may still read cells that have never been written to (for instance below the current viewport!).
+    // Such reads should not fail. Simply fill the `infos` array with whitespaces and a default attribute of your chosing,
+    // but `FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED` is recommended (no other bits set).
+    HRESULT ReadBuffer([in] CONPTY_COORD pos, [in] INT32 count, [out, length_is(count)] CONPTY_CHAR_INFO* infos);
+
+    // Starting from column `pos.x` in row `pos.y`, this write `count`-many characters and attributes.
+    // `pos` and `count` will be clamped such that writes never extend outside of the `CONPTY_INFO::bufferSize`.
+    HRESULT WriteBuffer([in] CONPTY_COORD pos, [in] INT32 count, [out, length_is(count)] CONPTY_CHAR_INFO* infos);
+
+    // UTF8 and UTF16 are both widely used text encodings on Windows and it's recommended that both functions are reasonably fast.
+    // ConPTY will translate all non-Unicode text to UTF16 for you.
+    // You must validate incoming text. It's recommended to replace invalid codepoints with U+FFFD.
+    // You don't need to check for broken up codepoints at the start/end of the text, because ConPTY will handle that for you.
+    HRESULT WriteUTF8([in, string, length_is(count)] const char* text, [in] DWORD count);
+    HRESULT WriteUTF16([in, string, length_is(count)] const wchar_t* text, [in] DWORD count);
 };
 ```
 

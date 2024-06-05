@@ -67,6 +67,7 @@ private:
         bool IsClean() const noexcept;
         void MarkEverythingDirty() noexcept;
         void MarkAsClean() noexcept;
+        void Suspend(bool suspended) noexcept;
 
         std::wstring_view GetUnmodifiedTextBeforeCursor() const noexcept;
         std::wstring_view GetUnmodifiedTextAfterCursor() const noexcept;
@@ -79,6 +80,7 @@ private:
         std::wstring _buffer;
         size_t _dirtyBeg = npos;
         size_t _cursor = 0;
+        bool _suspended = false;
     };
 
     enum class PopupKind
@@ -112,11 +114,6 @@ private:
         // The inner rectangle of the popup, excluding the border that we draw.
         // In absolute TextBuffer coordinates.
         til::rect contentRect;
-        // The area we've backed up and need to restore when we dismiss the popup.
-        // It'll practically always be 1 larger than contentRect in all 4 directions.
-        Microsoft::Console::Types::Viewport backupRect;
-        // The backed up buffer contents. Uses CHAR_INFO for convenience.
-        std::vector<CHAR_INFO> backup;
 
         // Using a std::variant would be preferable in modern C++ but is practically equally annoying to use.
         union
