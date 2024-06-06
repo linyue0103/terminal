@@ -1433,9 +1433,9 @@ void COOKED_READ_DATA::_popupHandleCommandListInput(Popup& popup, const wchar_t 
 void COOKED_READ_DATA::_popupDrawPrompt(const Popup& popup, const UINT id) const
 {
     const auto text = _LoadString(id);
-    WriteCharsVT(_screenInfo, L"\x1b[3m");
+    WriteCharsVT(_screenInfo, csi("3m"));
     WriteCharsVT(_screenInfo, text);
-    WriteCharsVT(_screenInfo, L"\x1b[23m");
+    WriteCharsVT(_screenInfo, csi("23m"));
 }
 
 void COOKED_READ_DATA::_popupDrawCommandList(Popup& popup) const
@@ -1478,17 +1478,17 @@ void COOKED_READ_DATA::_popupDrawCommandList(Popup& popup) const
         buffer.append(L"\r\n");
         if (str.empty())
         {
-            buffer.append(L"\x1b[K");
+            buffer.append(csi("K"));
         }
         else if (selected)
         {
-            buffer.append(L"\x1b[7m\x1b[K> ");
+            buffer.append(csi("7m") csi("K") "> ");
             buffer.append(str);
-            buffer.append(L"\x1b[27m");
+            buffer.append(csi("27m"));
         }
         else
         {
-            buffer.append(L"\x1b[K  ");
+            buffer.append(csi("K") "  ");
             buffer.append(str);
         }
     }

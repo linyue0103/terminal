@@ -321,7 +321,7 @@ This step is somewhat difficult to visualize, but the basic idea is that instead
 ```cs
 // The Console API is built around a freely addressable frame buffer. It allows you to
 // address any part of the buffer, even those outside of what's considered the "viewport".
-// Consequentially, ConPTY supports this and all `CONPTY_COORD`s are relative to this buffer.
+// Consequentially, ConPTY supports this and all `CONPTY_POINT_I32`s are relative to this buffer.
 // The VT viewport may be any vertical section of that console buffer. For instance:
 //
 //                       ┌──────────────────┐
@@ -339,7 +339,7 @@ This step is somewhat difficult to visualize, but the basic idea is that instead
 //                    ╰  └──────────────────┘
 //
 // The good news is that nothing prevents you from giving the Console Buffer the exact
-// same size as the VT Viewport and for modern terminals doing so is recommended. That way, `CONPTY_COORD`
+// same size as the VT Viewport and for modern terminals doing so is recommended. That way, `CONPTY_POINT_I32`
 // instances are all viewport-relative and content below/above the viewport is never addressed:
 //
 //                       ┌──────────────────┐    ╮
@@ -356,9 +356,15 @@ This step is somewhat difficult to visualize, but the basic idea is that instead
 // 0 and above 65535 are generally invalid, as the Console ABI currently uses unsigned 16-Bit integers.
 //
 // You should always perform input validation and return E_INVALIDARG for invalid coordinates.
-struct CONPTY_COORD {
+
+struct CONPTY_POINT_I32 {
     INT32 x;
     INT32 y;
+};
+
+struct CONPTY_POINT_F32 {
+    float x;
+    float y;
 };
 
 // These flags are also defined via Windows.h.
@@ -392,12 +398,13 @@ struct CONPTY_COORD {
 // This struct is binary compatible to the CHAR_INFO struct from the Windows API and functionally equivalent.
 //
 // The following rules MUST be followed:
-// * Each instance represents 1 cell in the terminal.
-// * Each instance contains a single UCS-2 character.
-//   Surrogate pairs and grapheme clusters are not allowed. Replace them with U+FFFD.
+// * Each instance represents 1 column in the terminal.
+// * Any cells that aren't representable with a single UCS-2 character, or are wider than 2 columns,
+//   must be replaced with U+FFFD. Grapheme clusters, surrogate pairs, and similar, are not allowed.
+//   Keep in mind that U+FFFD is a narrow character. It does not get the wide wide-glyph treatment below.
 // * Colors that cannot be represented via the `attributes` flags can be replaced with an approximation.
 //   Alternatively, `FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED` can be used (no `BACKGROUND` bit set).
-// * If a wide glyph (2 cells wide) is encountered, the following applies:
+// * If a wide glyph (2 columns wide) is encountered, the following applies:
 //   * Create 2 consecutive CONPTY_CHAR_INFO instances (as per the first rule).
 //   * Repeat the same `character` in both instances, even if it's U+FFFD.
 //   * Assign the first instance an `attributes` flag of `COMMON_LVB_LEADING_BYTE`
@@ -415,18 +422,26 @@ struct CONPTY_CHAR_INFO {
     UINT16 attributes;
 };
 
+struct CONPTY_UTF16_STRING {
+    [size_is(length)] const wchar_t* data;
+    DWORD length;
+}
+
 // NOTE: boolean is 8 Bits large.
 struct CONPTY_INFO {
     HWND window;
+    CONPTY_UTF16_STRING originalWindowTitle;
+    CONPTY_UTF16_STRING windowTitle;
 
-    CONPTY_COORD bufferSize;
-    CONPTY_COORD cursorPosition;
-    CONPTY_COORD viewPosition;
-    CONPTY_COORD viewSize;
+    CONPTY_POINT_I32 bufferSizeInCells;
+    CONPTY_POINT_I32 cursorPositionInCells;
+    CONPTY_POINT_I32 viewPositionInCells;
+    CONPTY_POINT_I32 viewSizeInCells;
+    CONPTY_POINT_F32 cellSizeInDIP;
     COLORREF colorTable[16];
 
-    CONPTY_COORD selectionStart;
-    CONPTY_COORD selectionEnd;
+    CONPTY_POINT_I32 selectionStart;
+    CONPTY_POINT_I32 selectionEnd;
     boolean selectionActive;
     boolean selectionRectangular;
     boolean selectionMouseDown;
@@ -438,28 +453,33 @@ struct CONPTY_INFO {
 // Any item that has changed relative to the current CONPTY_INFO will be set to a non-null pointer.
 // In other words, members that are null represent those that remain unchanged.
 struct CONPTY_INFO_CHANGE {
-    CONPTY_COORD* bufferSize;
-    CONPTY_COORD* cursorPosition;
-    CONPTY_COORD* viewPosition;
-    CONPTY_COORD* viewSize;
+    CONPTY_POINT_I32* bufferSizeInCells;
+    CONPTY_POINT_I32* cursorPositionInCells;
+    CONPTY_POINT_I32* viewPositionInCells;
+    CONPTY_POINT_I32* viewSizeInCells;
     COLORREF* colorTable; // The referenced array is always 16 items large.
 
     float* cursorHeight;
     boolean* cursorHidden;
 
-    [string] const wchar_t* fontName;
+    CONPTY_UTF16_STRING* fontName;
     UINT32* fontFamily;
     UINT32* fontWeight;
-    CONPTY_COORD* fontSize;
+    CONPTY_POINT_I32* fontSize;
 };
 
-interface IConsole {
-    void WriteInput(const INPUT_RECORD* )
+interface IConsoleServer {
+    // ConPTY manages stdin as a ring buffer for you. When the terminal has focus, you simply need to write your input.
+    // Keyboard input MUST be written via `WriteInputRecords`. The other 2 functions DO NOT parse any VT sequences.
+    // They're instead meant either for VT responses (DECRPM, etc.) and for dumping plain text (clipboard, etc.).
+    void WriteInputRecords([in] DWORD count, [in, length_is(count)] const INPUT_RECORD* records);
+    void WriteInputUTF8([in] DWORD count, [in, string, length_is(count)] const char* text);
+    void WriteInputUTF16([in] DWORD count, [in, string, length_is(count)] const wchar_t* text);
 }
 
 // First of all: You don't need to implement all functions and all structs perfectly for ConPTY to work decently well.
 // For instance, if you don't implement `CONPTY_INFO::cursorHeight` properly, barely anything will happen.
-interface IConsoleCallback {
+interface IConsoleServerCallback {
     // The console server is single-threaded and no two calls will be made simultaneously. These two functions
     // simply allow you to synchronize the calls down below if your application is multi-threaded.
     //
@@ -473,7 +493,7 @@ interface IConsoleCallback {
     // You must ensure that the returned pointer stays valid until the next GetInfo() or Unlock() call.
     // You don't need to return a new instance on each call. ConPTY will only use the last returned pointer.
     // You don't need to keep the CONPTY_INFO struct constantly up to date, but you're allowed to.
-    //   For instance, it's valid to change the CONPTY_COORD::cursorPosition field when SetCursorPosition() is called.
+    //   For instance, it's valid to change the CONPTY_POINT_I32::cursorPosition field when SetCursorPosition() is called.
     //   But changing the CONPTY_INFO struct concurrently is not permitted. The previous call to Lock() is expected to lock the terminal.
     //
     // In short, it's recommended to have just a single CONPTY_INFO instance in your implementation,
@@ -489,26 +509,11 @@ interface IConsoleCallback {
     // a non-null `.bufferSize` is a request to resize the terminal, and so on.
     HRESULT SetInfo([in] const CONPTY_INFO_CHANGE* info);
 
-    // Starting from column `pos.x` in row `pos.y`, this reads `columns`-many characters and attributes.
-    // `pos` and `columns` will be clamped such that reads never extend outside of the `CONPTY_INFO::bufferSize`.
-    //
-    // However, it may still read cells that have never been written to (for instance below the current viewport!).
-    // Such reads should not fail. Simply fill the `infos` array with whitespaces and a default attribute of your chosing,
-    // but `FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED` is recommended (no other bits set).
-    HRESULT ReadBuffer([in] CONPTY_COORD pos, [in] INT32 columns, [out, length_is(columns)] CONPTY_CHAR_INFO* infos);
-
-    // Starting from column `pos.x` in row `pos.y`, this reads `columns`-many characters and attributes.
-    // `pos` and `columns` will be clamped such that reads never extend outside of the `CONPTY_INFO::bufferSize`.
-    //
-    // However, it may still read cells that have never been written to (for instance below the current viewport!).
-    // Such reads should not fail. Simply fill the `infos` array with whitespaces and a default attribute of your chosing,
-    // but `FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED` is recommended (no other bits set).
-    HRESULT ReadBuffer([in] CONPTY_COORD pos, [in] INT32 columns, [out, length_is(columns)] CONPTY_CHAR_INFO* infos);
-
-    // As explained in the CONPTY_COORD documentation, ConPTY coordinates may be outside of the VT viewport.
+    // As explained in the CONPTY_POINT_I32 documentation, ConPTY coordinates may be outside of the VT viewport.
     // This function is necessary in order to support this. If you assign the console buffer the same size
-    // as the VT viewport, `pos` can be translated to VT using `printf("\x1b[%d;%dC", pos.y + 1, pos.x + 1)`.
-    HRESULT SetCursorPosition([in] CONPTY_COORD pos);
+    // as the VT viewport, `pos` can be translated to VT using
+    //   printf("\x1b[%d;%dC", pos.y + 1, pos.x + 1);
+    HRESULT SetCursorPosition([in] CONPTY_POINT_I32 pos);
 
     // The Console API's supports 4 gridline attributes which cannot be translated to VT.
     // This function is necessary in order to support this. If you don't plan to support those gridlines,
@@ -516,8 +521,14 @@ interface IConsoleCallback {
     //   static const uint8_t lut[] = { 30, 34, 32, 36, 31, 35, 33, 37, 90, 94, 92, 96, 91, 95, 93, 97 };
     //   const auto fg = lut[attributes & 0xf];
     //   const auto bg = lut[(attributes >> 4) & 0xf] + 10;
-    //   printf("\x1b[{};{}m", fg, bg);
-    // You may also choose to support COMMON_LVB_REVERSE_VIDEO, which translates to `printf("\x1b[7m")`.
+    //   printf("\x1b[%d;%dm", fg, bg);
+    //
+    // `attributes` of exactly `FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED` are often used to indicate the
+    // default colors in Windows Console applications, and so you may choose to translate attributes like that as:
+    //   printf("\x1b[39;49");
+    //
+    // You may also choose to support COMMON_LVB_REVERSE_VIDEO, which translates to
+    //   printf("\x1b[7m");
     HRESULT SetCurrentAttributes([in] UINT16 attributes);
 
     // Starting from column `pos.x` in row `pos.y`, this reads `count`-many characters and attributes.
@@ -526,20 +537,95 @@ interface IConsoleCallback {
     // However, it may still read cells that have never been written to (for instance below the current viewport!).
     // Such reads should not fail. Simply fill the `infos` array with whitespaces and a default attribute of your chosing,
     // but `FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED` is recommended (no other bits set).
-    HRESULT ReadBuffer([in] CONPTY_COORD pos, [in] INT32 count, [out, length_is(count)] CONPTY_CHAR_INFO* infos);
+    // NOTE that this does not account for any line renditions (DECDWL, DECDHL). The same applies here.
+    HRESULT ReadBuffer([in] CONPTY_POINT_I32 pos, [in] INT32 count, [out, length_is(count)] CONPTY_CHAR_INFO* infos);
 
-    // Starting from column `pos.x` in row `pos.y`, this write `count`-many characters and attributes.
-    // `pos` and `count` will be clamped such that writes never extend outside of the `CONPTY_INFO::bufferSize`.
-    HRESULT WriteBuffer([in] CONPTY_COORD pos, [in] INT32 count, [out, length_is(count)] CONPTY_CHAR_INFO* infos);
+    HRESULT MeasureTextForward([in] DWORD count, [in, string, length_is(count)] const wchar_t* text, [in] DWORD maxClusters, [in] DWORD maxColumns, [in, out] DWORD* position, [out] DWORD* columns);
+    HRESULT MeasureTextBackward([in] DWORD count, [in, string, length_is(count)] const wchar_t* text, [in] DWORD maxClusters, [in] DWORD maxColumns, [in, out] DWORD* position, [out] DWORD* columns);
 
     // UTF8 and UTF16 are both widely used text encodings on Windows and it's recommended that both functions are reasonably fast.
     // ConPTY will translate all non-Unicode text to UTF16 for you.
     // You must validate incoming text. It's recommended to replace invalid codepoints with U+FFFD.
     // You don't need to check for broken up codepoints at the start/end of the text, because ConPTY will handle that for you.
-    HRESULT WriteUTF8([in, string, length_is(count)] const char* text, [in] DWORD count);
-    HRESULT WriteUTF16([in, string, length_is(count)] const wchar_t* text, [in] DWORD count);
+    HRESULT WriteUTF8([in] DWORD count, [in, string, length_is(count)] const char* text);
+    HRESULT WriteUTF16([in] DWORD count, [in, string, length_is(count)] const wchar_t* text);
 };
 ```
+
+The list shows how each Console API function is implemented in terms of the above interface.
+* Aliases
+  Fully implemented inside the server component without API.
+  * `AddConsoleAlias`
+  * `GetConsoleAlias`
+  * `GetConsoleAliases`
+  * `GetConsoleAliasesLength`
+  * `GetConsoleAliasExes`
+  * `GetConsoleAliasExesLength`
+* History
+  Fully implemented inside the server component without API.
+  * `ExpungeConsoleCommandHistory`
+  * `GetConsoleCommandHistory`
+  * `GetConsoleCommandHistoryLength`
+  * `GetConsoleHistoryInfo`
+  * `SetConsoleHistoryInfo`
+  * `SetConsoleNumberOfCommands`
+* stdin
+  Fully implemented inside the server component without API.
+  * `FlushConsoleInputBuffer`
+  * `GetConsoleInput`
+  * `GetConsoleInputCodePage`
+  * `GetConsoleInputMode`
+  * `GetNumberOfConsoleInputEvents`
+  * `ReadConsole`
+  * `SetConsoleInputCodePage`
+  * `SetConsoleInputMode`
+  * `WriteConsoleInput`
+* Unsupported since conhost v1
+  * `GetConsoleDisplayMode`
+  * `GetConsoleLangId`
+  * `SetConsoleDisplayMode`
+* Buffer management
+  This part of the API design is currently a big unknown, since they have an undefined behavior under the current ConPTY implementation.
+  It remains to be seen how to best implement them.
+  * `GetConsoleScreenBufferInfoEx`: `GetInfo`
+  * `SetConsoleActiveScreenBuffer`
+  * `SetConsoleScreenBufferInfoEx`
+  * `SetConsoleScreenBufferSize`
+* Cursor
+  * `GetConsoleCursorInfo`: `GetInfo`
+  * `SetConsoleCursorInfo`: `SetInfo`
+  * `SetConsoleCursorPosition`: `GetInfo`
+* Fonts
+  * `GetConsoleFontSize`: `GetInfo`
+  * `GetCurrentConsoleFontEx`: `GetInfo`
+  * `SetCurrentConsoleFontEx`: `SetInfo`
+* Window management
+  * `GetConsoleOriginalTitle`: `GetInfo`
+  * `GetConsoleSelectionInfo`: `GetInfo`
+  * `GetConsoleTitle`: `GetInfo`
+  * `GetConsoleWindow`: `GetInfo`
+  * `GetLargestConsoleWindowSize`: `GetInfo`; The window frame size can be inferred from the difference between the `GetWindowRect(hwnd)` and the `viewSizeInCells * cellSizeInDIP`. The max. cell count can then be calculated by getting the `MonitorFromWindow(hwnd)` size, subtracting the frame size and calculating the cell count.
+  * `GetNumberOfConsoleMouseButtons`: Implemented inside the server component via `GetSystemMetrics(SM_CMOUSEBUTTONS)`
+  * `SetConsoleTitle`: `SetInfo`
+  * `SetConsoleWindowInfo`: `SetInfo`
+* stdout (writing)
+  * `FillConsoleOutputAttribute`: Set the new attributes with `SetCurrentAttributes`. For each line, get the existing contents with `ReadBuffer`, `SetCursorPosition` to the start, concatenate the cells and write them with `WriteUTF16`.
+  * `FillConsoleOutputCharacter`: For each line, get the existing contents with `ReadBuffer`, `SetCursorPosition` to the start, concatenate the cells and write them with `WriteUTF16`. At the start of each line and every time the attributes change use `SetCurrentAttributes` to set them up.
+  * `GetConsoleOutputCodePage`: Implemented inside the server component.
+  * `GetConsoleOutputMode`: Implemented inside the server component.
+  * `ScrollConsoleScreenBuffer`: **TODO**: It may be necessary to add a `ScrollBuffer` API to make vertical scrolling across the entire buffer width faster. This fast pass currently exists as well. Otherwise, this will be translated to: Read all lines in the source rectangle with `ReadBuffer`. Then refer to the `WriteConsoleOutput` implementation for writing it to the target.
+  * `SetConsoleOutputCodePage`: Implemented inside the server component.
+  * `SetConsoleOutputMode`: Implemented inside the server component.
+  * `SetConsoleTextAttribute`: `SetCurrentAttributes`
+  * `WriteConsole`: `WriteUTF8` if `CP_UTF8` is active and otherwise `WriteUTF16`.
+  * `WriteConsoleOutput`: For each line, `SetCursorPosition` to the start, concatenate the cells and write them with `WriteUTF16`. At the start of each line and every time the attributes change use `SetCurrentAttributes` to set them up.
+  * `WriteConsoleOutputAttribute`: Same as `FillConsoleOutputAttribute`, but with varying attributes.
+  * `WriteConsoleOutputCharacter`: Same as `FillConsoleOutputCharacter`, but with varying characters.
+* stdout (reading)
+  Each of these will be translated to a series of `ReadBuffer` calls, one for each line.
+  * `ReadConsoleOutput`
+  * `ReadConsoleOutputAttribute`
+  * `ReadConsoleOutputCharacter`
 
 ## Step 3: Productize Server
 
@@ -614,4 +700,8 @@ flowchart LR
     style conhost_ConPTY_Translation opacity:0.2
 ```
 
+After creating an _internal_ API in conhost, the next logical step is for us to extract the interface as a public one and consume it in Windows Terminal. At this point we should also see if we can find early adoptors of the API in other projects.
+
 ## Step 4: Ship Server in Windows
+
+The final goal we should aim for is to ship this new API with Windows. Not to actually, necessarily do it, but rather because it represents a potentially achievable "aim for the stars" goal. It would make sense to do it, because `conhost.exe` will be based on this API and if we extract it out into its own DLL anyone can use it, while not costing us any significant disk usage. It also ensures that we continue to maintain a clear seperation of concerns between the server component and the rest of the system.

@@ -1011,12 +1011,18 @@ void ApiRoutines::GetLargestConsoleWindowSizeImpl(const SCREEN_INFORMATION& cont
         auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
         if (gci.IsInVtIoMode())
         {
-            // The Console API represents colors in BGR order, but VT represents them in RGB order.
-            // This LUT transposes them. This is for foreground colors. Add +10 to get the background ones.
-            static const uint8_t lut[] = { 30, 34, 32, 36, 31, 35, 33, 37, 90, 94, 92, 96, 91, 95, 93, 97 };
-            const auto fg = lut[attribute & 0xf];
-            const auto bg = lut[(attribute >> 4) & 0xf] + 10;
-            gci.GetVtIo()->WriteFormat(FMT_COMPILE("\x1b[{};{}m"), fg, bg);
+            if (attribute & COLORS)
+            {
+            }
+            else
+            {
+                // The Console API represents colors in BGR order, but VT represents them in RGB order.
+                // This LUT transposes them. This is for foreground colors. Add +10 to get the background ones.
+                static const uint8_t lut[] = { 30, 34, 32, 36, 31, 35, 33, 37, 90, 94, 92, 96, 91, 95, 93, 97 };
+                const auto fg = lut[attribute & 0xf];
+                const auto bg = lut[(attribute >> 4) & 0xf] + 10;
+                gci.GetVtIo()->WriteFormat(FMT_COMPILE("\x1b[{};{}m"), fg, bg);
+            }
         }
 
         return S_OK;
