@@ -124,12 +124,11 @@ static void AdjustCursorPosition(SCREEN_INFORMATION& screenInfo, _In_ til::point
 }
 
 // As the name implies, this writes text without processing its control characters.
-static bool _writeCharsLegacyUnprocessed(SCREEN_INFORMATION& screenInfo, const std::wstring_view& text, til::CoordType* psScrollY)
+static void _writeCharsLegacyUnprocessed(SCREEN_INFORMATION& screenInfo, const std::wstring_view& text, til::CoordType* psScrollY)
 {
     const auto wrapAtEOL = WI_IsFlagSet(screenInfo.OutputMode, ENABLE_WRAP_AT_EOL_OUTPUT);
     const auto hasAccessibilityEventing = screenInfo.HasAccessibilityEventing();
     auto& textBuffer = screenInfo.GetTextBuffer();
-    bool wrapForced = false;
 
     RowWriteState state{
         .text = text,
@@ -143,9 +142,8 @@ static bool _writeCharsLegacyUnprocessed(SCREEN_INFORMATION& screenInfo, const s
         state.columnBegin = cursorPosition.x;
         textBuffer.Replace(cursorPosition.y, textBuffer.GetCurrentAttributes(), state);
         cursorPosition.x = state.columnEnd;
-        wrapForced = wrapAtEOL && state.columnEnd >= state.columnLimit;
 
-        if (wrapForced)
+        if (wrapAtEOL && state.columnEnd >= state.columnLimit)
         {
             textBuffer.SetWrapForced(cursorPosition.y, true);
         }
@@ -157,8 +155,6 @@ static bool _writeCharsLegacyUnprocessed(SCREEN_INFORMATION& screenInfo, const s
 
         AdjustCursorPosition(screenInfo, cursorPosition, psScrollY);
     }
-
-    return wrapForced;
 }
 
 // This routine writes a string to the screen while handling control characters.
@@ -205,7 +201,7 @@ void WriteCharsLegacy(SCREEN_INFORMATION& screenInfo, const std::wstring_view& t
     // If it's not set, we can just straight up give everything to WriteCharsLegacyUnprocessed.
     if (WI_IsFlagClear(screenInfo.OutputMode, ENABLE_PROCESSED_OUTPUT))
     {
-        const auto wrapForced = _writeCharsLegacyUnprocessed(screenInfo, text, psScrollY);
+        _writeCharsLegacyUnprocessed(screenInfo, text, psScrollY);
 
         if (io)
         {
@@ -220,9 +216,9 @@ void WriteCharsLegacy(SCREEN_INFORMATION& screenInfo, const std::wstring_view& t
             std::replace_if(begMut, endMut, isActionableFromGround, L' ');
 
             io->WriteUTF16(text);
-            if (wrapForced)
+            if (wrapAtEOL)
             {
-                io->WriteUTF8("\r\n");
+                io->WriteUTF8(" \b");
             }
         }
 
@@ -235,15 +231,15 @@ void WriteCharsLegacy(SCREEN_INFORMATION& screenInfo, const std::wstring_view& t
         if (nextControlChar != it)
         {
             const std::wstring_view chunk{ it, nextControlChar };
-            const auto wrapForced = _writeCharsLegacyUnprocessed(screenInfo, chunk, psScrollY);
+            _writeCharsLegacyUnprocessed(screenInfo, chunk, psScrollY);
             it = nextControlChar;
 
             if (io)
             {
                 io->WriteUTF16(chunk);
-                if (wrapForced)
+                if (wrapAtEOL)
                 {
-                    io->WriteUTF8("\r\n");
+                    io->WriteUTF8(" \b");
                 }
             }
         }
@@ -254,11 +250,10 @@ void WriteCharsLegacy(SCREEN_INFORMATION& screenInfo, const std::wstring_view& t
             {
             case UNICODE_NULL:
             {
-                const auto wrapForced = _writeCharsLegacyUnprocessed(screenInfo, { &tabSpaces[0], 1 }, psScrollY);
+                _writeCharsLegacyUnprocessed(screenInfo, { &tabSpaces[0], 1 }, psScrollY);
                 if (io)
                 {
-                    const size_t len = wrapForced ? 3 : 1;
-                    io->WriteUTF8({ "\0\r\n", len });
+                    io->WriteUTF8("\0");
                 }
                 continue;
             }
@@ -287,11 +282,11 @@ void WriteCharsLegacy(SCREEN_INFORMATION& screenInfo, const std::wstring_view& t
                 const auto pos = cursor.GetPosition();
                 const auto remaining = width - pos.x;
                 const auto tabCount = gsl::narrow_cast<size_t>(std::min(remaining, 8 - (pos.x & 7)));
-                const auto wrapForced = _writeCharsLegacyUnprocessed(screenInfo, { &tabSpaces[0], tabCount }, psScrollY);
+                _writeCharsLegacyUnprocessed(screenInfo, { &tabSpaces[0], tabCount }, psScrollY);
                 if (io)
                 {
-                    const size_t len = wrapForced ? 3 : 1;
-                    io->WriteUTF8({ "\t\r\n", len });
+                    const size_t len = wrapAtEOL ? 3 : 1;
+                    io->WriteUTF8({ "\t \b", len });
                 }
                 continue;
             }
@@ -336,13 +331,13 @@ void WriteCharsLegacy(SCREEN_INFORMATION& screenInfo, const std::wstring_view& t
             if (result == 1)
             {
                 const std::wstring_view chunk{ &wch, 1 };
-                const auto wrapForced = _writeCharsLegacyUnprocessed(screenInfo, chunk, psScrollY);
+                _writeCharsLegacyUnprocessed(screenInfo, chunk, psScrollY);
                 if (io)
                 {
                     io->WriteUTF16(chunk);
-                    if (wrapForced)
+                    if (wrapAtEOL)
                     {
-                        io->WriteUTF8("\r\n");
+                        io->WriteUTF8(" \b");
                     }
                 }
             }

@@ -443,6 +443,7 @@ void ApiRoutines::GetNumberOfConsoleMouseButtonsImpl(ULONG& buttons) noexcept
         auto& screenInfo = context.GetActiveBuffer();
         const auto dwOldMode = screenInfo.OutputMode;
         const auto dwNewMode = mode;
+        const auto diff = dwOldMode ^ dwNewMode;
 
         screenInfo.OutputMode = dwNewMode;
 
@@ -461,6 +462,17 @@ void ApiRoutines::GetNumberOfConsoleMouseButtonsImpl(ULONG& buttons) noexcept
             if (const auto pRender = ServiceLocator::LocateGlobals().pRender)
             {
                 pRender->TriggerRedrawAll();
+            }
+        }
+
+        if (WI_IsFlagSet(diff, ENABLE_WRAP_AT_EOL_OUTPUT))
+        {
+            auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
+            if (gci.IsInVtIoMode())
+            {
+                char buf[] = "\x1b[?7l"; // DECAWM - Autowrap Mode
+                buf[std::size(buf) - 2] = WI_IsFlagSet(dwNewMode, ENABLE_WRAP_AT_EOL_OUTPUT) ? 'h' : 'l';
+                gci.GetVtIo()->WriteUTF8(buf);
             }
         }
 
