@@ -19,6 +19,7 @@
 #include "../types/inc/viewport.hpp"
 
 #include "../interactivity/inc/ServiceLocator.hpp"
+#include "til/unicode.h"
 
 #pragma hdrstop
 
@@ -606,10 +607,20 @@ CATCH_RETURN();
 {
     try
     {
+        auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
+
+        Microsoft::Console::VirtualTerminal::VtIo* io = nullptr;
+        Microsoft::Console::VirtualTerminal::VtIo::CorkLock corkLock;
+
+        if (gci.IsInVtIoMode())
+        {
+            io = gci.GetVtIo();
+            corkLock = io->Cork();
+        }
+
         auto& storageBuffer = context.GetActiveBuffer();
         const auto storageRectangle = storageBuffer.GetBufferSize();
         const auto storageSize = storageRectangle.Dimensions();
-
         const auto sourceSize = requestRectangle.Dimensions();
 
         // If either dimension of the request is too small, return an empty rectangle as the read and exit early.
@@ -667,8 +678,8 @@ CATCH_RETURN();
         }
 
         const auto writeRectangle = Viewport::FromInclusive(writeRegion);
-
         auto target = writeRectangle.Origin();
+        DWORD attributes = 0xffffffff;
 
         // For every row in the request, create a view into the clamped portion of just the one line to write.
         // This allows us to restrict the width of the call without allocating/copying any memory by just making
@@ -681,14 +692,65 @@ CATCH_RETURN();
             const auto totalOffset = rowOffset + colOffset;
 
             // Now we make a subspan starting from that offset for as much of the original request as would fit
-            const auto subspan = buffer.subspan(totalOffset, writeRectangle.Width());
-
-            // Convert to a CHAR_INFO view to fit into the iterator
-            const auto charInfos = std::span<const CHAR_INFO>(subspan.data(), subspan.size());
+            const auto charInfos = buffer.subspan(totalOffset, writeRectangle.Width());
 
             // Make the iterator and write to the target position.
-            OutputCellIterator it(charInfos);
-            storageBuffer.Write(it, target);
+            storageBuffer.Write(OutputCellIterator(charInfos), target);
+
+            if (io)
+            {
+                io->WriteFormat(FMT_COMPILE("\x1b[{};{}H"), target.y + 1, target.x + 1);
+
+                const auto beg = charInfos.begin();
+                const auto end = charInfos.end();
+                const auto last = end - 1;
+
+                for (auto it = beg; it != end; ++it)
+                {
+                    const auto& ci = *it;
+                    auto ch = ci.Char.UnicodeChar;
+
+                    if (WI_IsAnyFlagSet(ci.Attributes, COMMON_LVB_LEADING_BYTE | COMMON_LVB_TRAILING_BYTE))
+                    {
+                        if (WI_IsAnyFlagSet(ci.Attributes, COMMON_LVB_LEADING_BYTE))
+                        {
+                            if (it == last)
+                            {
+                                // The leading half of a wide glyph won't fit into the last remaining column.
+                                // --> Replace it with a space.
+                                ch = UNICODE_SPACE;
+                            }
+                        }
+                        else
+                        {
+                            if (it == beg)
+                            {
+                                // The trailing half of a wide glyph won't fit into the first column. It's incomplete.
+                                // --> Replace it with a space.
+                                ch = UNICODE_SPACE;
+                            }
+                            else
+                            {
+                                // Trailing halves of glyphs are ignored within the run. We only emit the leading half.
+                                continue;
+                            }
+                        }
+                    }
+
+                    if (attributes != ci.Attributes)
+                    {
+                        attributes = ci.Attributes;
+                        io->WriteAttributes(attributes);
+                    }
+
+                    if (til::is_surrogate(ch))
+                    {
+                        ch = UNICODE_REPLACEMENT;
+                    }
+
+                    io->WriteUTF16({ &ch, 1 });
+                }
+            }
         }
 
         // Since we've managed to write part of the request, return the clamped part that we actually used.

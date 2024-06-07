@@ -1011,23 +1011,7 @@ void ApiRoutines::GetLargestConsoleWindowSizeImpl(const SCREEN_INFORMATION& cont
         auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
         if (gci.IsInVtIoMode())
         {
-            uint8_t fg = 39;
-            uint8_t bg = 49;
-            uint8_t rv = WI_IsFlagSet(attribute, COMMON_LVB_REVERSE_VIDEO) ? 7 : 27;
-
-            // `attribute`s of exactly `FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED`
-            // are often used to indicate the default colors in Windows Console applications.
-            // Thus, we translate them to 39/49 (default foreground/background).
-            if ((attribute & (FG_ATTRS | BG_ATTRS)) != (FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED))
-            {
-                // The Console API represents colors in BGR order, but VT represents them in RGB order.
-                // This LUT transposes them. This is for foreground colors. Add +10 to get the background ones.
-                static const uint8_t lut[] = { 30, 34, 32, 36, 31, 35, 33, 37, 90, 94, 92, 96, 91, 95, 93, 97 };
-                fg = lut[attribute & 0xf];
-                bg = lut[(attribute >> 4) & 0xf] + 10;
-            }
-
-            gci.GetVtIo()->WriteFormat(FMT_COMPILE("\x1b[{};{};{}m"), rv, fg, bg);
+            gci.GetVtIo()->WriteAttributes(attribute);
         }
 
         return S_OK;

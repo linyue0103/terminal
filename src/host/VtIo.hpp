@@ -31,8 +31,9 @@ namespace Microsoft::Console::VirtualTerminal
 
         friend struct CorkLock;
 
-        [[nodiscard]] HRESULT Initialize(const ConsoleArguments* const pArgs);
+        static void SetAttributes(std::string& target, WORD attributes);
 
+        [[nodiscard]] HRESULT Initialize(const ConsoleArguments* const pArgs);
         [[nodiscard]] HRESULT CreateAndStartSignalThread() noexcept;
         [[nodiscard]] HRESULT CreateIoHandlers() noexcept;
 
@@ -55,12 +56,12 @@ namespace Microsoft::Console::VirtualTerminal
         }
         void WriteUTF8(const std::string_view& str);
         void WriteUTF16(const std::wstring_view& str);
+        void WriteAttributes(WORD attributes);
 
     private:
         [[nodiscard]] HRESULT _Initialize(const HANDLE InHandle, const HANDLE OutHandle, _In_opt_ const HANDLE SignalHandle);
 
         void _uncork();
-
         void _flush();
 
         // After CreateIoHandlers is called, these will be invalid.

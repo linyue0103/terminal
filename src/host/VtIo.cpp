@@ -45,6 +45,27 @@ VtIo::CorkLock& VtIo::CorkLock::operator=(CorkLock&& other)
     return *this;
 }
 
+void VtIo::SetAttributes(std::string& target, WORD attributes)
+{
+    const uint8_t rv = WI_IsFlagSet(attributes, COMMON_LVB_REVERSE_VIDEO) ? 7 : 27;
+    uint8_t fg = 39;
+    uint8_t bg = 49;
+
+    // `attributes` of exactly `FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED`
+    // are often used to indicate the default colors in Windows Console applications.
+    // Thus, we translate them to 39/49 (default foreground/background).
+    if ((attributes & (FG_ATTRS | BG_ATTRS)) != (FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED))
+    {
+        // The Console API represents colors in BGR order, but VT represents them in RGB order.
+        // This LUT transposes them. This is for foreground colors. Add +10 to get the background ones.
+        static const uint8_t lut[] = { 30, 34, 32, 36, 31, 35, 33, 37, 90, 94, 92, 96, 91, 95, 93, 97 };
+        fg = lut[attributes & 0xf];
+        bg = lut[(attributes >> 4) & 0xf] + 10;
+    }
+
+    fmt::format_to(std::back_inserter(target), FMT_COMPILE("\x1b[{};{};{}m"), rv, fg, bg);
+}
+
 [[nodiscard]] HRESULT VtIo::Initialize(const ConsoleArguments* const pArgs)
 {
     _lookingForCursorPosition = pArgs->GetInheritCursor();
@@ -91,21 +112,6 @@ VtIo::CorkLock& VtIo::CorkLock::operator=(CorkLock&& other)
     // If the args say so, then at least one of in, out, or signal was specified
     _initialized = true;
     return S_OK;
-}
-
-void VtIo::_uncork()
-{
-    _corked -= 1;
-    _flush();
-}
-
-void VtIo::_flush()
-{
-    if (_corked == 0)
-    {
-        WriteUTF8(_buffer);
-        _buffer.clear();
-    }
 }
 
 // Method Description:
@@ -327,4 +333,25 @@ void VtIo::WriteUTF16(const std::wstring_view& str)
 
     const auto str8 = til::u16u8(str);
     WriteUTF8(str8);
+}
+
+void VtIo::WriteAttributes(WORD attributes)
+{
+    SetAttributes(_buffer, attributes);
+    _flush();
+}
+
+void VtIo::_uncork()
+{
+    _corked -= 1;
+    _flush();
+}
+
+void VtIo::_flush()
+{
+    if (_corked == 0)
+    {
+        WriteUTF8(_buffer);
+        _buffer.clear();
+    }
 }
