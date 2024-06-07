@@ -1482,7 +1482,7 @@ void COOKED_READ_DATA::_popupDrawCommandList(Popup& popup) const
         }
         else if (selected)
         {
-            buffer.append(csi("7m") csi("K") "> ");
+            buffer.append(csi("7m") csi("K") "▶ ");
             buffer.append(str);
             buffer.append(csi("27m"));
         }

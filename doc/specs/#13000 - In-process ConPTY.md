@@ -20,8 +20,7 @@ issue id: 13000
    Replace relevant singletons with instances.
 3. Make `Server` a standalone library with `IApiRoutines` as its primary callback interface.
    Integrate the library in Windows Terminal.
-4. Ship the `Server` library as part of Windows. Build conhost itself on top of it.
-   (Long term goal.)
+4. (Long term goal:) Ship the `Server` library as part of Windows. Build conhost itself on top of it.
 
 ## Why?
 
@@ -145,8 +144,13 @@ To extend on the [tl;dr](#tldr):
   * ...may implement text reflow (resize) differently.
   * Resizing the terminal and ConPTY is asynchronous and there may be concurrent text output.
   * ...and it may uncover text from the scrollback, which ConPTY doesn't know about.
-* Since ConPTY communicates with the hosting terminal exclusively via escape sequences, it fails to cover some Console API methods that cannot be represented via VT sequences. The most basic example of this is the lack of LVB gridlines.
-* As the prototype that ConPTY initially was it has fulfilled our needs a thousand times over, but it being just a layer on top of conhost has resulted in software decay. Today, ConPTY's architecture is difficult to maintain and debug. The layer boundary with existing conhost code has slowly blurred over the years which has negatively affected many places. Lastly, its performance is poor and subject to much debate. It's on us now to finally pay our debt and make ConPTY its own proper, composable component that both conhost and Windows Terminal can be built on top of.
+* Since ConPTY communicates with the hosting terminal exclusively via escape sequences, it fails to cover some Console API methods that cannot be represented via VT sequences.
+  The most basic example of this is the lack of LVB gridlines.
+* As the prototype that ConPTY initially was it has fulfilled our needs a thousand times over, but it being just a layer on top of conhost has resulted in software decay.
+  Today, ConPTY's architecture is difficult to maintain and debug.
+  The layer boundary with existing conhost code has slowly blurred over the years which has negatively affected many places.
+  Lastly, its performance is poor and subject to much debate.
+  It's on us now to finally pay our debt and make ConPTY its own proper, composable component that both conhost and Windows Terminal can be built on top of.
 
 Considerations:
 * A named `MUTEX` can theoretically be used to solve parts of the out-of-sync issue, because it could be used to ensure a synchronous buffer reflow.
@@ -155,7 +159,7 @@ Considerations:
   It also doesn't solve any of the other listed problems.
   Running ConPTY in-process on the other hand appears to be a trivial change in comparison.
 
-## Step 1: Remove VtEngine
+## Goal 1: Remove VtEngine
 
 ### Goal
 
@@ -219,7 +223,7 @@ flowchart TD
     style VtEngine opacity:0.2
 ```
 
-### Steps
+### Goals
 
 * Remove VtEngine
 * Remove `--vtmode`
@@ -229,13 +233,26 @@ flowchart TD
 
 ### Discussion
 
-The idea is that we can translate Console API calls directly to VT at least as well as the current VtEngine setup can. For instance, a call to `SetConsoleCursorPosition` clearly translates directly to a `CUP` escape sequence. But even complex calls like `WriteConsoleOutputAttribute` which have no VT equivalent can be implemented this way by first applying the changes to our local text buffer and then serializing the affected range back to VT. Since the Console API is extremely limited (only 16 colors, etc.), the serialization code will similarly be extremely simple. That's also how VtEngine currently works, but instead of doing it asynchronously in the renderer thread, we'll do it synchronously right during the Console API call.
+The idea is that we can translate Console API calls directly to VT at least as well as the current VtEngine setup can.
+For instance, a call to `SetConsoleCursorPosition` clearly translates directly to a `CUP` escape sequence.
+But even complex calls like `WriteConsoleOutputAttribute` which have no VT equivalent can be implemented this way by first applying the changes to our local text buffer and then serializing the affected range back to VT.
+Since the Console API is extremely limited (only 16 colors, etc.), the serialization code will similarly be extremely simple.
+That's also how VtEngine currently works, but instead of doing it asynchronously in the renderer thread, we'll do it synchronously right during the Console API call.
 
-The `--vtmode xterm-ascii` switch exists for the telnet client as it only supports ASCII as per RFC854 section "THE NVT PRINTER AND KEYBOARD". However, telnet is the only user of this flag and it's trivial to do there (for instance by stripping high codepoints in `WriteOutputToClient` in `telnet/console.cpp`), so there's no reason for us to keep this logic in the new code.
+Apart from the Console API, the "cooked read" implementation, which handles our builtin "readline"-like text editor, will need to receive significant changes.
+Currently it shows popups on top of the existing content and uses `ReadConsoleOutput` and `WriteConsoleOutput` to backup and restore the affected rectangle.
+This results in exactly the same issues that were previously outlined where our text buffer implementation may be different than that of the hosting terminal.
+Furthermore its current popup implementation directly interfaces with the backing text buffer and its translation relies on the existence of VtEngine.
+In order to solve this issue, the popups should be rewritten to use escape sequences so that they can be directly passed to the hosting terminal.
+They should also always be below the current prompt line so that we don't need to perform a potentially lossy backup/restore operation.
 
-This change will result in a significant reduction in complexity of our architecture. VT input from the shell or other clients will be given 1:1 to the hosting terminal, which will once and for all resolve our ordering and buffering issues.
+The `--vtmode xterm-ascii` switch exists for the telnet client as it only supports ASCII as per RFC854 section "THE NVT PRINTER AND KEYBOARD".
+However, telnet is the only user of this flag and it's trivial to do there (for instance by stripping high codepoints in `WriteOutputToClient` in `telnet/console.cpp`), so there's no reason for us to keep this logic in the new code.
 
-## Step 2: Move Console API implementations to Server
+This change will result in a significant reduction in complexity of our architecture.
+VT input from the shell or other clients will be given 1:1 to the hosting terminal, which will once and for all resolve our ordering and buffering issues.
+
+## Goal 2: Move Console API implementations to Server
 
 ### Goal
 
@@ -303,7 +320,7 @@ flowchart TD
     style ConPTY_output opacity:0.2
 ```
 
-### Steps
+### Goals
 
 * Move the API implementation from the `Host` to the `Server` project.
 * Narrow down the `IApiRoutines` interface to its essentials.
@@ -311,7 +328,9 @@ flowchart TD
 
 ### Discussion
 
-This step is somewhat difficult to visualize, but the basic idea is that instead of having 3 arrows going in and out of the Server component, we got exactly 1. This makes the console server and its VT translation a proper, reusable component, which we need so that we can solve the out-of-sync issues and to support all Console APIs. To make the Server API convenient to use, the interface needs to be narrowed down to as few methods as possible. This interface is currently called `IApiRoutines`.
+This goal is somewhat difficult to visualize, but the basic idea is that instead of having 3 arrows going in and out of the Server component, we got exactly 1.
+This makes the console server and its VT translation a proper, reusable component, which we need so that we can solve the out-of-sync issues and to support all Console APIs.
+To make the Server API convenient to use, the interface needs to be narrowed down to as few methods as possible. This interface is currently called `IApiRoutines`.
 
 ### API Design
 
@@ -321,7 +340,7 @@ This step is somewhat difficult to visualize, but the basic idea is that instead
 ```cs
 // The Console API is built around a freely addressable frame buffer. It allows you to
 // address any part of the buffer, even those outside of what's considered the "viewport".
-// Consequentially, ConPTY supports this and all `CONPTY_POINT_I32`s are relative to this buffer.
+// Consequentially, ConPTY supports this and all `CONSRV_POINT_I32`s are relative to this buffer.
 // The VT viewport may be any vertical section of that console buffer. For instance:
 //
 //                       ┌──────────────────┐
@@ -339,7 +358,7 @@ This step is somewhat difficult to visualize, but the basic idea is that instead
 //                    ╰  └──────────────────┘
 //
 // The good news is that nothing prevents you from giving the Console Buffer the exact
-// same size as the VT Viewport and for modern terminals doing so is recommended. That way, `CONPTY_POINT_I32`
+// same size as the VT Viewport and for modern terminals doing so is recommended. That way, `CONSRV_POINT_I32`
 // instances are all viewport-relative and content below/above the viewport is never addressed:
 //
 //                       ┌──────────────────┐    ╮
@@ -357,12 +376,12 @@ This step is somewhat difficult to visualize, but the basic idea is that instead
 //
 // You should always perform input validation and return E_INVALIDARG for invalid coordinates.
 
-struct CONPTY_POINT_I32 {
+struct CONSRV_POINT_I32 {
     INT32 x;
     INT32 y;
 };
 
-struct CONPTY_POINT_F32 {
+struct CONSRV_POINT_F32 {
     float x;
     float y;
 };
@@ -405,43 +424,52 @@ struct CONPTY_POINT_F32 {
 // * Colors that cannot be represented via the `attributes` flags can be replaced with an approximation.
 //   Alternatively, `FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED` can be used (no `BACKGROUND` bit set).
 // * If a wide glyph (2 columns wide) is encountered, the following applies:
-//   * Create 2 consecutive CONPTY_CHAR_INFO instances (as per the first rule).
+//   * Create 2 consecutive CONSRV_CHAR_INFO instances (as per the first rule).
 //   * Repeat the same `character` in both instances, even if it's U+FFFD.
 //   * Assign the first instance an `attributes` flag of `COMMON_LVB_LEADING_BYTE`
 //     and the second one `COMMON_LVB_TRAILING_BYTE`.
-//   * BUT if the request for a CONPTY_CHAR_INFO only partially intersects a wide glyph, replace the character
+//   * BUT if the request for a CONSRV_CHAR_INFO only partially intersects a wide glyph, replace the character
 //     (and only the character) with U+0020 whitespace. This also means that `COMMON_LVB_LEADING/TRAILING_BYTE`
 //     should not be set, because the returned character isn't wide anymore. An example:
-//     If you have a red "猫" on top of a blue background in the buffer and a single `CONPTY_CHAR_INFO` is requested
+//     If you have a red "猫" on top of a blue background in the buffer and a single `CONSRV_CHAR_INFO` is requested
 //     for the left half of the glyph, then you should set `character` to whitespace and `attributes` to
 //     `FOREGROUND_RED | BACKGROUND_BLUE`. Debug builds of ConPTY will assert that you do this.
 //
 // For more documentation about the `attributes` flags, see the constants defined above.
-struct CONPTY_CHAR_INFO {
+struct CONSRV_CHAR_INFO {
     wchar_t character;
     UINT16 attributes;
 };
 
-struct CONPTY_UTF16_STRING {
+struct CONSRV_UTF8_STRING {
+    [size_is(length)] const char* data;
+    DWORD length;
+};
+
+struct CONSRV_UTF16_STRING {
     [size_is(length)] const wchar_t* data;
     DWORD length;
-}
+};
 
+// NOTE: At the time of writing the required fields are not fully known.
 // NOTE: boolean is 8 Bits large.
-struct CONPTY_INFO {
+struct CONSRV_INFO {
+    // NOTE: msys2 relies on the HWND value to uniquely identify terminal sessions.
+    // If we were to hand out the multiplexed terminal window HWND to msys2, it will break. Either we need to
+    // create fake windows inside conhost (very bad & buggy) or break msys2 intentionally (also very bad).
     HWND window;
-    CONPTY_UTF16_STRING originalWindowTitle;
-    CONPTY_UTF16_STRING windowTitle;
+    CONSRV_UTF16_STRING originalWindowTitle;
+    CONSRV_UTF16_STRING windowTitle;
 
-    CONPTY_POINT_I32 bufferSizeInCells;
-    CONPTY_POINT_I32 cursorPositionInCells;
-    CONPTY_POINT_I32 viewPositionInCells;
-    CONPTY_POINT_I32 viewSizeInCells;
-    CONPTY_POINT_F32 cellSizeInDIP;
+    CONSRV_POINT_I32 bufferSizeInCells;
+    CONSRV_POINT_I32 cursorPositionInCells;
+    CONSRV_POINT_I32 viewPositionInCells;
+    CONSRV_POINT_I32 viewSizeInCells;
+    CONSRV_POINT_F32 cellSizeInDIP;
     COLORREF colorTable[16];
 
-    CONPTY_POINT_I32 selectionStart;
-    CONPTY_POINT_I32 selectionEnd;
+    CONSRV_POINT_I32 selectionStart;
+    CONSRV_POINT_I32 selectionEnd;
     boolean selectionActive;
     boolean selectionRectangular;
     boolean selectionMouseDown;
@@ -450,70 +478,99 @@ struct CONPTY_INFO {
     boolean cursorHidden;
 };
 
-// Any item that has changed relative to the current CONPTY_INFO will be set to a non-null pointer.
+// Any item that has changed relative to the current CONSRV_INFO will be set to a non-null pointer.
 // In other words, members that are null represent those that remain unchanged.
-struct CONPTY_INFO_CHANGE {
-    CONPTY_POINT_I32* bufferSizeInCells;
-    CONPTY_POINT_I32* cursorPositionInCells;
-    CONPTY_POINT_I32* viewPositionInCells;
-    CONPTY_POINT_I32* viewSizeInCells;
+//
+// If the request cannot be supported return E_INVALIDARG. For instance, you may choose to
+// do so if you receive a `bufferSizeInCells` change while the xterm alt buffer is active.
+//
+// NOTE: At the time of writing the required fields are not fully known.
+struct CONSRV_INFO_CHANGE {
+    CONSRV_POINT_I32* bufferSizeInCells;
+    CONSRV_POINT_I32* cursorPositionInCells;
+    CONSRV_POINT_I32* viewPositionInCells;
+    CONSRV_POINT_I32* viewSizeInCells;
     COLORREF* colorTable; // The referenced array is always 16 items large.
 
     float* cursorHeight;
     boolean* cursorHidden;
 
-    CONPTY_UTF16_STRING* fontName;
+    CONSRV_UTF16_STRING* fontName;
     UINT32* fontFamily;
     UINT32* fontWeight;
-    CONPTY_POINT_I32* fontSize;
+    CONSRV_POINT_I32* fontSize;
 };
 
-interface IConsoleServer {
+interface IConsoleServer : IUnknown {
     // ConPTY manages stdin as a ring buffer for you. When the terminal has focus, you simply need to write your input.
     // Keyboard input MUST be written via `WriteInputRecords`. The other 2 functions DO NOT parse any VT sequences.
     // They're instead meant either for VT responses (DECRPM, etc.) and for dumping plain text (clipboard, etc.).
     void WriteInputRecords([in] DWORD count, [in, length_is(count)] const INPUT_RECORD* records);
-    void WriteInputUTF8([in] DWORD count, [in, string, length_is(count)] const char* text);
-    void WriteInputUTF16([in] DWORD count, [in, string, length_is(count)] const wchar_t* text);
-}
+    void WriteInputUTF8([in] CONSRV_UTF8_STRING text);
+    void WriteInputUTF16([in] CONSRV_UTF16_STRING text);
+};
 
 // First of all: You don't need to implement all functions and all structs perfectly for ConPTY to work decently well.
-// For instance, if you don't implement `CONPTY_INFO::cursorHeight` properly, barely anything will happen.
-interface IConsoleServerCallback {
+// For instance, if you don't implement `CONSRV_INFO::cursorHeight` properly, barely anything will happen.
+interface IConsoleServerCallback : IUnknown {
     // The console server is single-threaded and no two calls will be made simultaneously. These two functions
     // simply allow you to synchronize the calls down below if your application is multi-threaded.
     //
     // Lock() will always be called before any of the functions below are called.
     // Lock() and Unlock() do not need to support recursive locking.
+    //
+    // It is recommended to use a fair lock instead of OS primitives like SRWLOCK. These callback functions may called
+    // significantly more often than your text renderer, etc., runs. An unfair lock will result in thread starvation.
     HRESULT Lock();
     HRESULT Unlock();
 
+    // If called, you're requested to create a new console alt buffer. The Console API supports having
+    // multiple concurrent such buffers. They're not the same as the xterm alt buffer however (CSI ? 1049 h):
+    // They can be resized to be larger than the current viewport and switching between such buffers DOES NOT
+    // clear them nor does it reset any other state.
+    //
+    // If you have trouble adding support for multiple console alt buffers, consider using the xterm alt buffer
+    // (CSI ? 1049 h) for the first buffer that gets created, and return E_OUTOFMEMORY for any further buffers.
+    HRESULT CreateBuffer([out] void** buffer);
+
+    // ReleaseBuffer is called once the buffer isn't needed anymore. It's guaranteed to be called and it's guaranteed
+    // to be called after ActivateBuffer() was used to switch to another buffer (or the main buffer).
+    HRESULT ReleaseBuffer([in] void* buffer);
+
+    // This switches between different console alt buffers. Doing so DOES NOT clear any state or buffers.
+    //
+    // If `buffer` is NULL it's a request to switch back to the main buffer.
+    //
+    // Switching between buffers should ideally be fast. It may switch back and forth between buffers between
+    // the Lock() and Unlock() calls, just to end up activating the same buffer that it started with.
+    // The `temporary` parameter will be set to `TRUE` in that case.
+    HRESULT ActivateBuffer([in] void* buffer, [in] boolean temporary);
+
+    //
+    // Any functions past this point operate on the currently active buffer.
+    //
+
     // This function gets a snapshot of the terminal state.
     //
-    // You must ensure that the returned pointer stays valid until the next GetInfo() or Unlock() call.
+    // You must ensure that the returned pointer stays valid until the next GetInfo() or Unlock() call,
+    //   or until the currently active buffer is released.
     // You don't need to return a new instance on each call. ConPTY will only use the last returned pointer.
-    // You don't need to keep the CONPTY_INFO struct constantly up to date, but you're allowed to.
-    //   For instance, it's valid to change the CONPTY_POINT_I32::cursorPosition field when SetCursorPosition() is called.
-    //   But changing the CONPTY_INFO struct concurrently is not permitted. The previous call to Lock() is expected to lock the terminal.
-    //
-    // In short, it's recommended to have just a single CONPTY_INFO instance in your implementation,
-    // which you keep alive forever, and which you simply update whenever GetInfo() is called.
+    // You don't need to keep the CONSRV_INFO struct constantly up to date, but you're allowed to.
+    //   For instance, it's valid to change the `.cursorPosition` when SetCursorPosition() is called.
     //
     // It's recommended that this function is fast as it will be called relatively often.
-    // One possible technique to do so is to keep most fields constantly up-to-date (e.g. the `bufferSize`),
-    // while updating those that change very often only once this method is called (e.g. the `cursorPosition`).
-    const CONPTY_INFO* GetInfo();
+    const CONSRV_INFO* GetInfo();
 
-    // In short, when this method is called you're asked to apply any non-null member of the given CONPTY_INFO_CHANGE
+    // When this method is called you're asked to apply any non-null member of the given CONSRV_INFO_CHANGE
     // struct to the terminal. For instance a non-null `.cursorPosition` is identical to calling `SetCursorPosition`,
     // a non-null `.bufferSize` is a request to resize the terminal, and so on.
-    HRESULT SetInfo([in] const CONPTY_INFO_CHANGE* info);
+    HRESULT SetInfo([in] const CONSRV_INFO_CHANGE* info);
 
-    // As explained in the CONPTY_POINT_I32 documentation, ConPTY coordinates may be outside of the VT viewport.
+    // As explained in the CONSRV_POINT_I32 documentation, ConPTY coordinates may be outside of the VT viewport.
     // This function is necessary in order to support this. If you assign the console buffer the same size
     // as the VT viewport, `pos` can be translated to VT using
     //   printf("\x1b[%d;%dC", pos.y + 1, pos.x + 1);
-    HRESULT SetCursorPosition([in] CONPTY_POINT_I32 pos);
+    HRESULT SetCursorPosition([in] CONSRV_POINT_I32 pos);
 
     // The Console API's supports 4 gridline attributes which cannot be translated to VT.
     // This function is necessary in order to support this. If you don't plan to support those gridlines,
@@ -532,29 +589,49 @@ interface IConsoleServerCallback {
     HRESULT SetCurrentAttributes([in] UINT16 attributes);
 
     // Starting from column `pos.x` in row `pos.y`, this reads `count`-many characters and attributes.
-    // `pos` and `count` will be clamped such that reads never extend outside of the `CONPTY_INFO::bufferSize`.
+    // `pos` and `count` will be clamped such that reads never extend outside of the `CONSRV_INFO::bufferSize`.
     //
     // However, it may still read cells that have never been written to (for instance below the current viewport!).
     // Such reads should not fail. Simply fill the `infos` array with whitespaces and a default attribute of your chosing,
     // but `FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED` is recommended (no other bits set).
     // NOTE that this does not account for any line renditions (DECDWL, DECDHL). The same applies here.
-    HRESULT ReadBuffer([in] CONPTY_POINT_I32 pos, [in] INT32 count, [out, length_is(count)] CONPTY_CHAR_INFO* infos);
+    HRESULT ReadBuffer([in] CONSRV_POINT_I32 pos, [in] INT32 count, [out, length_is(count)] CONSRV_CHAR_INFO* infos);
 
-    HRESULT MeasureTextForward([in] DWORD count, [in, string, length_is(count)] const wchar_t* text, [in] DWORD maxClusters, [in] DWORD maxColumns, [in, out] DWORD* position, [out] DWORD* columns);
-    HRESULT MeasureTextBackward([in] DWORD count, [in, string, length_is(count)] const wchar_t* text, [in] DWORD maxClusters, [in] DWORD maxColumns, [in, out] DWORD* position, [out] DWORD* columns);
+    // These two functions are used to layout text for the internal "GNU Readline"-like implementation.
+    // `text`        is the string to operate on. As with any other method, input validation should be performed.
+    //               It's preferred to pretend as if invalid codepoints (in particular invalid surrogate pairs)
+    //               are U+FFFD, because this provides the user with some level of text editing capability.
+    //               The alternative is to have none at all when facing invalid strings which is strictly worse.
+    // `maxClusters` is the maximum amount of "cursor movements" these functions should apply
+    //               (like when pressing the left/right arrow buttons).
+    // `maxColumns`  is the maximum amount of columns the functions may iterate over. When the text is "a猫" and
+    //               `maxColumns` is 2, then the result should be "a", because "猫" doesn't fit anymore.
+    // `position`    on input contains the current position of the cursor inside `text`, counted in characters from the
+    //               start of the `text`. On output it's supposed to contain the new cursor position.
+    //               `position` may be out of bounds and you should clamp it to a valid range first.
+    // `columns`     on output should contain the number of columns that have been iterated over.
+    //
+    // The idea is that a `maxClusters = 1` and `maxColumns = inf` can be used to implement left/right cursor movement,
+    // while `maxClusters = inf` and `maxColumns = window width` can be used to layout text within the window.
+    //
+    // You don't need to handle escape characters. These functions will never be called with any present.
+    // For robustness against bugs it's however recommended to handle them anyway. If you have no preference
+    // for how to measure them, assign them a width of 1 column.
+    HRESULT MeasureTextForward([in] CONSRV_UTF16_STRING text, [in] DWORD maxClusters, [in] DWORD maxColumns, [in, out] DWORD* position, [out] DWORD* columns);
+    HRESULT MeasureTextBackward([in] CONSRV_UTF16_STRING text, [in] DWORD maxClusters, [in] DWORD maxColumns, [in, out] DWORD* position, [out] DWORD* columns);
 
-    // UTF8 and UTF16 are both widely used text encodings on Windows and it's recommended that both functions are reasonably fast.
-    // ConPTY will translate all non-Unicode text to UTF16 for you.
+    // UTF8 and UTF16 are both widely used text encodings on Windows and it's recommended that both
+    // functions are reasonably fast. ConPTY will translate all non-Unicode text to UTF16 for you.
     // You must validate incoming text. It's recommended to replace invalid codepoints with U+FFFD.
-    // You don't need to check for broken up codepoints at the start/end of the text, because ConPTY will handle that for you.
-    HRESULT WriteUTF8([in] DWORD count, [in, string, length_is(count)] const char* text);
-    HRESULT WriteUTF16([in] DWORD count, [in, string, length_is(count)] const wchar_t* text);
+    // You don't need to check for broken up codepoints at the start/end of the text, as ConPTY will handle that for you.
+    HRESULT WriteUTF8([in] boolean raw, [in] CONSRV_UTF8_STRING text);
+    HRESULT WriteUTF16([in] boolean raw, [in] CONSRV_UTF16_STRING text);
 };
 ```
 
 The list shows how each Console API function is implemented in terms of the above interface.
 * Aliases
-  Fully implemented inside the server component without API.
+  <br>Fully implemented inside the server component without API.
   * `AddConsoleAlias`
   * `GetConsoleAlias`
   * `GetConsoleAliases`
@@ -562,7 +639,7 @@ The list shows how each Console API function is implemented in terms of the abov
   * `GetConsoleAliasExes`
   * `GetConsoleAliasExesLength`
 * History
-  Fully implemented inside the server component without API.
+  <br>Fully implemented inside the server component without API.
   * `ExpungeConsoleCommandHistory`
   * `GetConsoleCommandHistory`
   * `GetConsoleCommandHistoryLength`
@@ -570,7 +647,7 @@ The list shows how each Console API function is implemented in terms of the abov
   * `SetConsoleHistoryInfo`
   * `SetConsoleNumberOfCommands`
 * stdin
-  Fully implemented inside the server component without API.
+  <br>Fully implemented inside the server component without API.
   * `FlushConsoleInputBuffer`
   * `GetConsoleInput`
   * `GetConsoleInputCodePage`
@@ -585,12 +662,10 @@ The list shows how each Console API function is implemented in terms of the abov
   * `GetConsoleLangId`
   * `SetConsoleDisplayMode`
 * Buffer management
-  This part of the API design is currently a big unknown, since they have an undefined behavior under the current ConPTY implementation.
-  It remains to be seen how to best implement them.
-  * `GetConsoleScreenBufferInfoEx`: `GetInfo`
-  * `SetConsoleActiveScreenBuffer`
-  * `SetConsoleScreenBufferInfoEx`
-  * `SetConsoleScreenBufferSize`
+  * `GetConsoleScreenBufferInfoEx`: Gets information from server's internal `SCREEN_INFORMATION` class (which represents the `HANDLE`).
+  * `SetConsoleScreenBufferInfoEx`: Sets information on server's internal `SCREEN_INFORMATION` class.
+  * `SetConsoleActiveScreenBuffer`: `ActivateBuffer` + `SetInfo`
+  * `SetConsoleScreenBufferSize`: `SetInfo`
 * Cursor
   * `GetConsoleCursorInfo`: `GetInfo`
   * `SetConsoleCursorInfo`: `SetInfo`
@@ -622,12 +697,12 @@ The list shows how each Console API function is implemented in terms of the abov
   * `WriteConsoleOutputAttribute`: Same as `FillConsoleOutputAttribute`, but with varying attributes.
   * `WriteConsoleOutputCharacter`: Same as `FillConsoleOutputCharacter`, but with varying characters.
 * stdout (reading)
-  Each of these will be translated to a series of `ReadBuffer` calls, one for each line.
+  <br>Each of these will be translated to a series of `ReadBuffer` calls, one for each line.
   * `ReadConsoleOutput`
   * `ReadConsoleOutputAttribute`
   * `ReadConsoleOutputCharacter`
 
-## Step 3: Productize Server
+## Goal 3: Productize Server
 
 ### Goal
 
@@ -702,6 +777,6 @@ flowchart LR
 
 After creating an _internal_ API in conhost, the next logical step is for us to extract the interface as a public one and consume it in Windows Terminal. At this point we should also see if we can find early adoptors of the API in other projects.
 
-## Step 4: Ship Server in Windows
+## Stretch Goal 4: Ship Server in Windows
 
 The final goal we should aim for is to ship this new API with Windows. Not to actually, necessarily do it, but rather because it represents a potentially achievable "aim for the stars" goal. It would make sense to do it, because `conhost.exe` will be based on this API and if we extract it out into its own DLL anyone can use it, while not costing us any significant disk usage. It also ensures that we continue to maintain a clear seperation of concerns between the server component and the rest of the system.

@@ -244,38 +244,34 @@ void WriteCharsLegacy(SCREEN_INFORMATION& screenInfo, const std::wstring_view& t
             }
         }
 
-        for (; it != end && controlCharPredicate(*it); ++it)
+        if (it == end)
         {
-            switch (*it)
+            break;
+        }
+
+        do
+        {
+            auto wch = *it;
+
+            switch (wch)
             {
             case UNICODE_NULL:
             {
                 _writeCharsLegacyUnprocessed(screenInfo, { &tabSpaces[0], 1 }, psScrollY);
-                if (io)
-                {
-                    io->WriteUTF8("\0");
-                }
-                continue;
+                wch = L' ';
+                break;
             }
             case UNICODE_BELL:
             {
                 std::ignore = screenInfo.SendNotifyBeep();
-                if (io)
-                {
-                    io->WriteUTF8({ "\a", 1 });
-                }
-                continue;
+                break;
             }
             case UNICODE_BACKSPACE:
             {
                 auto pos = cursor.GetPosition();
                 pos.x = textBuffer.GetRowByOffset(pos.y).NavigateToPrevious(pos.x);
                 AdjustCursorPosition(screenInfo, pos, psScrollY);
-                if (io)
-                {
-                    io->WriteUTF8({ "\b", 1 });
-                }
-                continue;
+                break;
             }
             case UNICODE_TAB:
             {
@@ -283,12 +279,7 @@ void WriteCharsLegacy(SCREEN_INFORMATION& screenInfo, const std::wstring_view& t
                 const auto remaining = width - pos.x;
                 const auto tabCount = gsl::narrow_cast<size_t>(std::min(remaining, 8 - (pos.x & 7)));
                 _writeCharsLegacyUnprocessed(screenInfo, { &tabSpaces[0], tabCount }, psScrollY);
-                if (io)
-                {
-                    const size_t len = wrapAtEOL ? 3 : 1;
-                    io->WriteUTF8({ "\t \b", len });
-                }
-                continue;
+                break;
             }
             case UNICODE_LINEFEED:
             {
@@ -301,46 +292,45 @@ void WriteCharsLegacy(SCREEN_INFORMATION& screenInfo, const std::wstring_view& t
                 textBuffer.GetMutableRowByOffset(pos.y).SetWrapForced(false);
                 pos.y = pos.y + 1;
                 AdjustCursorPosition(screenInfo, pos, psScrollY);
-                if (io)
-                {
-                    io->WriteUTF8({ "\n", 1 });
-                }
-                continue;
+                break;
             }
             case UNICODE_CARRIAGERETURN:
             {
                 auto pos = cursor.GetPosition();
                 pos.x = 0;
                 AdjustCursorPosition(screenInfo, pos, psScrollY);
-                if (io)
-                {
-                    io->WriteUTF8({ "\r", 1 });
-                }
-                continue;
-            }
-            default:
                 break;
             }
-
-            // As a special favor to incompetent apps that attempt to display control chars,
-            // convert to corresponding OEM Glyph Chars
-            const auto cp = ServiceLocator::LocateGlobals().getConsoleInformation().OutputCP;
-            const auto ch = gsl::narrow_cast<char>(*it);
-            wchar_t wch = 0;
-            const auto result = MultiByteToWideChar(cp, MB_USEGLYPHCHARS, &ch, 1, &wch, 1);
-            if (result == 1)
+            default:
             {
-                const std::wstring_view chunk{ &wch, 1 };
-                _writeCharsLegacyUnprocessed(screenInfo, chunk, psScrollY);
-                if (io)
+                // As a special favor to incompetent apps that attempt to display control chars,
+                // convert to corresponding OEM Glyph Chars
+                const auto cp = ServiceLocator::LocateGlobals().getConsoleInformation().OutputCP;
+                const auto ch = gsl::narrow_cast<char>(wch);
+                const auto result = MultiByteToWideChar(cp, MB_USEGLYPHCHARS, &ch, 1, &wch, 1);
+                if (result != 1)
                 {
-                    io->WriteUTF16(chunk);
-                    if (wrapAtEOL)
-                    {
-                        io->WriteUTF8(" \b");
-                    }
+                    wch = 0;
                 }
+                if (wch)
+                {
+                    _writeCharsLegacyUnprocessed(screenInfo, { &wch, 1 }, psScrollY);
+                }
+                break;
             }
+            }
+
+            if (io && wch)
+            {
+                io->WriteUTF16({ &wch, 1 });
+            }
+
+            ++it;
+        } while (it != end && controlCharPredicate(*it));
+
+        if (io && wrapAtEOL)
+        {
+            io->WriteUTF8(" \b");
         }
     }
 }
