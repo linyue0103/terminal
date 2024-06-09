@@ -393,7 +393,7 @@ void ApiRoutines::GetNumberOfConsoleMouseButtonsImpl(ULONG& buttons) noexcept
 
                 if (WI_IsFlagSet(diff, ENABLE_MOUSE_INPUT))
                 {
-                    char buf[] = "\x1b[?1003;1006";
+                    char buf[] = "\x1b[?1003;1006h";
                     buf[std::size(buf) - 2] = WI_IsFlagSet(mode, ENABLE_MOUSE_INPUT) ? 'h' : 'l';
                     io->WriteUTF8(buf);
                 }
@@ -945,8 +945,8 @@ void ApiRoutines::GetLargestConsoleWindowSizeImpl(const SCREEN_INFORMATION& cont
                                                                   const til::inclusive_rect& source,
                                                                   const til::point target,
                                                                   std::optional<til::inclusive_rect> clip,
-                                                                  const wchar_t fillCharacter,
-                                                                  const WORD fillAttribute,
+                                                                  wchar_t fillCharacter,
+                                                                  WORD fillAttribute,
                                                                   const bool enableCmdShim) noexcept
 {
     try
@@ -954,36 +954,46 @@ void ApiRoutines::GetLargestConsoleWindowSizeImpl(const SCREEN_INFORMATION& cont
         LockConsole();
         auto Unlock = wil::scope_exit([&] { UnlockConsole(); });
 
-        auto& buffer = context.GetActiveBuffer();
-
-        TextAttribute useThisAttr(fillAttribute);
-        ScrollRegion(buffer, source, clip, target, fillCharacter, useThisAttr);
-
-        auto hr = S_OK;
-
-        // GH#3126 - This is a shim for cmd's `cls` function. In the
-        // legacy console, `cls` is supposed to clear the entire buffer. In
-        // conpty however, there's no difference between the viewport and the
-        // entirety of the buffer. We're going to see if this API call exactly
-        // matched the way we expect cmd to call it. If it does, then
-        // let's manually emit a ^[[3J to the connected terminal, so that their
-        // entire buffer will be cleared as well.
         auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
-        if (enableCmdShim && gci.IsInVtIoMode())
-        {
-            const auto size = buffer.GetBufferSize().ToInclusive();
-            const auto sourceIsWholeBuffer = source == size;
-            const auto targetIsNegativeBufferHeight = target.x == 0 && target.y == -size.bottom;
-            const auto noClipProvided = !clip;
-            const auto fillIsBlank = fillCharacter == UNICODE_SPACE && fillAttribute == buffer.GetAttributes().GetLegacyAttributes();
 
-            if (sourceIsWholeBuffer && targetIsNegativeBufferHeight && noClipProvided && fillIsBlank)
-            {
-                gci.GetVtIo()->WriteUTF8("\x1b[3J");
-            }
+        if (gci.IsInVtIoMode())
+        {
+            const auto io = gci.GetVtIo();
+            const auto corkLock = io->Cork();
+            (void)enableCmdShim;
+
+            //til::small_vector<CHAR_INFO, 1024> buffer;
+            //buffer.resize_and_overwrite(1024, [](auto&&) {});
+            //Viewport sourceRead;
+            //RETURN_IF_FAILED(ReadConsoleOutputWImpl(context, {}, Viewport::FromInclusive(source2), sourceRead));
+
+            // GH#3126 - This is a shim for cmd's `cls` function. In the
+            // legacy console, `cls` is supposed to clear the entire buffer. In
+            // conpty however, there's no difference between the viewport and the
+            // entirety of the buffer. We're going to see if this API call exactly
+            // matched the way we expect cmd to call it. If it does, then
+            // let's manually emit a ^[[3J to the connected terminal, so that their
+            // entire buffer will be cleared as well.
+            //auto& buffer = context.GetActiveBuffer();
+            //const auto size = buffer.GetBufferSize();
+            //if (enableCmdShim &&
+            //    source2.left <= 0 && source2.top <= 0 &&
+            //    source2.right >= size.RightInclusive() && source2.bottom >= size.BottomInclusive() &&
+            //    target2.x == 0 && target2.y <= -size.BottomInclusive() &&
+            //    !clip2 &&
+            //    fillCharacter == UNICODE_SPACE && fillAttribute == buffer.GetAttributes().GetLegacyAttributes())
+            //{
+            //    gci.GetVtIo()->WriteUTF8("\x1b[H\x1b[2J\x1b[3J");
+            //}
+        }
+        else
+        {
+            auto& buffer = context.GetActiveBuffer();
+            TextAttribute useThisAttr(fillAttribute);
+            ScrollRegion(buffer, source, clip, target, fillCharacter, useThisAttr);
         }
 
-        return hr;
+        return S_OK;
     }
     CATCH_RETURN();
 }

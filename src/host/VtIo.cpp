@@ -3,12 +3,14 @@
 
 #include "precomp.h"
 #include "VtIo.hpp"
-#include "../interactivity/inc/ServiceLocator.hpp"
 
-#include "../renderer/base/renderer.hpp"
-#include "../types/inc/utils.hpp"
+#include <til/unicode.h>
+
 #include "handle.h" // LockConsole
 #include "output.h" // CloseConsoleProcessState
+#include "../interactivity/inc/ServiceLocator.hpp"
+#include "../renderer/base/renderer.hpp"
+#include "../types/inc/utils.hpp"
 
 using namespace Microsoft::Console;
 using namespace Microsoft::Console::Render;
@@ -43,6 +45,18 @@ VtIo::CorkLock& VtIo::CorkLock::operator=(CorkLock&& other)
         _io = std::exchange(other._io, nullptr);
     }
     return *this;
+}
+
+// Returns true for C0 characters and C1 [single-character] CSI.
+// A copy of isActionableFromGround() from stateMachine.cpp.
+bool VtIo::IsControlCharacter(wchar_t wch) noexcept
+{
+    // This is equivalent to:
+    //   return (wch <= 0x1f) || (wch >= 0x7f && wch <= 0x9f);
+    // It's written like this to get MSVC to emit optimal assembly for findActionableFromGround.
+    // It lacks the ability to turn boolean operators into binary operations and also happens
+    // to fail to optimize the printable-ASCII range check into a subtraction & comparison.
+    return (wch <= 0x1f) | (static_cast<wchar_t>(wch - 0x7f) <= 0x20);
 }
 
 void VtIo::SetAttributes(std::string& target, WORD attributes)
@@ -192,7 +206,7 @@ bool VtIo::IsUsingVt() const
     // send us full INPUT_RECORDs as input. If the terminal doesn't understand
     // this sequence, it'll just ignore it.
     //LOG_IF_FAILED(_pVtRenderEngine->RequestWin32Input());
-    WriteUTF8("\x1b[20h\033[?9001h\033[?1004h");
+    //WriteUTF8("\x1b[20h\033[?9001h\033[?1004h");
 
     if (_pVtInputThread)
     {
@@ -333,6 +347,30 @@ void VtIo::WriteUTF16(const std::wstring_view& str)
 
     const auto str8 = til::u16u8(str);
     WriteUTF8(str8);
+}
+
+void VtIo::WriteUCS2(wchar_t ch)
+{
+    char buf[4];
+    size_t len = 0;
+
+    if (ch <= 0x7f)
+    {
+        buf[len++] = static_cast<char>(ch);
+    }
+    else if (ch <= 0x7ff)
+    {
+        buf[len++] = static_cast<char>(0xc0 | (ch >> 6));
+        buf[len++] = static_cast<char>(0x80 | (ch & 0x3f));
+    }
+    else
+    {
+        buf[len++] = static_cast<char>(0xe0 | (ch >> 12));
+        buf[len++] = static_cast<char>(0x80 | ((ch >> 6) & 0x3f));
+        buf[len++] = static_cast<char>(0x80 | (ch & 0x3f));
+    }
+
+    WriteUTF8({ &buf[0], len });
 }
 
 void VtIo::WriteAttributes(WORD attributes)

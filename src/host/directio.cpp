@@ -600,10 +600,10 @@ CATCH_RETURN();
     CATCH_RETURN();
 }
 
-[[nodiscard]] static HRESULT _WriteConsoleOutputWImplHelper(SCREEN_INFORMATION& context,
-                                                            std::span<CHAR_INFO> buffer,
-                                                            const Viewport& requestRectangle,
-                                                            Viewport& writtenRectangle) noexcept
+[[nodiscard]] HRESULT _WriteConsoleOutputWImplHelper(SCREEN_INFORMATION& context,
+                                                     std::span<CHAR_INFO> buffer,
+                                                     const Viewport& requestRectangle,
+                                                     Viewport& writtenRectangle) noexcept
 {
     try
     {
@@ -679,7 +679,7 @@ CATCH_RETURN();
 
         const auto writeRectangle = Viewport::FromInclusive(writeRegion);
         auto target = writeRectangle.Origin();
-        DWORD attributes = 0xffffffff;
+        WORD attributes = 0xffff;
 
         // For every row in the request, create a view into the clamped portion of just the one line to write.
         // This allows us to restrict the width of the call without allocating/copying any memory by just making
@@ -709,8 +709,9 @@ CATCH_RETURN();
                 {
                     const auto& ci = *it;
                     auto ch = ci.Char.UnicodeChar;
+                    auto wide = WI_IsAnyFlagSet(ci.Attributes, COMMON_LVB_LEADING_BYTE | COMMON_LVB_TRAILING_BYTE);
 
-                    if (WI_IsAnyFlagSet(ci.Attributes, COMMON_LVB_LEADING_BYTE | COMMON_LVB_TRAILING_BYTE))
+                    if (wide)
                     {
                         if (WI_IsAnyFlagSet(ci.Attributes, COMMON_LVB_LEADING_BYTE))
                         {
@@ -719,6 +720,7 @@ CATCH_RETURN();
                                 // The leading half of a wide glyph won't fit into the last remaining column.
                                 // --> Replace it with a space.
                                 ch = UNICODE_SPACE;
+                                wide = false;
                             }
                         }
                         else
@@ -728,6 +730,7 @@ CATCH_RETURN();
                                 // The trailing half of a wide glyph won't fit into the first column. It's incomplete.
                                 // --> Replace it with a space.
                                 ch = UNICODE_SPACE;
+                                wide = false;
                             }
                             else
                             {
@@ -743,12 +746,21 @@ CATCH_RETURN();
                         io->WriteAttributes(attributes);
                     }
 
-                    if (til::is_surrogate(ch))
+                    const auto isSurrogate = til::is_surrogate(ch);
+                    const auto isControl = Microsoft::Console::VirtualTerminal::VtIo::IsControlCharacter(ch);
+                    int repeat = 1;
+                    if (isSurrogate || isControl)
                     {
-                        ch = UNICODE_REPLACEMENT;
+                        ch = isSurrogate ? UNICODE_REPLACEMENT : UNICODE_SPACE;
+                        // Space and U+FFFD are narrow characters, so if the caller intended
+                        // for a wide glyph we need to emit two U+FFFD characters.
+                        repeat = wide ? 2 : 1;
                     }
 
-                    io->WriteUTF16({ &ch, 1 });
+                    do
+                    {
+                        io->WriteUCS2(ch);
+                    } while (--repeat);
                 }
             }
         }

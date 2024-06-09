@@ -31,6 +31,7 @@ namespace Microsoft::Console::VirtualTerminal
 
         friend struct CorkLock;
 
+        static bool IsControlCharacter(wchar_t wch) noexcept;
         static void SetAttributes(std::string& target, WORD attributes);
 
         [[nodiscard]] HRESULT Initialize(const ConsoleArguments* const pArgs);
@@ -56,6 +57,7 @@ namespace Microsoft::Console::VirtualTerminal
         }
         void WriteUTF8(const std::string_view& str);
         void WriteUTF16(const std::wstring_view& str);
+        void WriteUCS2(wchar_t ch);
         void WriteAttributes(WORD attributes);
 
     private:

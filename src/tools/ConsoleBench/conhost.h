@@ -11,6 +11,7 @@ using unique_nthandle = wil::unique_any_handle_null<decltype(&::NtClose), ::NtCl
 
 struct ConhostHandle
 {
+    unique_nthandle server;
     unique_nthandle reference;
     unique_nthandle connection;
 };

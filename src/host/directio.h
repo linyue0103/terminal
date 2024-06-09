@@ -17,9 +17,13 @@ Revision History:
 #pragma once
 
 #include "conapi.h"
-#include "inputBuffer.hpp"
 
 class SCREEN_INFORMATION;
+
+[[nodiscard]] HRESULT _WriteConsoleOutputWImplHelper(SCREEN_INFORMATION& context,
+                                                     std::span<CHAR_INFO> buffer,
+                                                     const Microsoft::Console::Types::Viewport& requestRectangle,
+                                                     Microsoft::Console::Types::Viewport& writtenRectangle) noexcept;
 
 [[nodiscard]] NTSTATUS ConsoleCreateScreenBuffer(std::unique_ptr<ConsoleHandleData>& handle,
                                                  _In_ PCONSOLE_API_MSG Message,

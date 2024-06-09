@@ -47,9 +47,18 @@ static void conhostCopyToStringBuffer(USHORT& length, auto& buffer, const wchar_
 ConhostHandle spawn_conhost(mem::Arena& arena, const wchar_t* path)
 {
     const auto scratch = mem::get_scratch_arena(arena);
-    const auto server = conhostCreateHandle(nullptr, L"\\Device\\ConDrv\\Server", true, false);
+    auto server = conhostCreateHandle(nullptr, L"\\Device\\ConDrv\\Server", true, false);
     auto reference = conhostCreateHandle(server.get(), L"\\Reference", false, true);
 
+    if (const auto len = wcslen(path); len > 4 && wcscmp(&path[len - 4], L".dll") == 0)
+    {
+        // We have to leak the module handle because old conhost versions cannot be safely unloaded.
+        using Entrypoint = NTSTATUS(NTAPI*)(HANDLE);
+        const auto h = THROW_LAST_ERROR_IF_NULL(LoadLibraryExW(path, nullptr, 0));
+        const auto f = THROW_LAST_ERROR_IF_NULL(reinterpret_cast<Entrypoint>(GetProcAddress(h, "ConsoleCreateIoThread")));
+        THROW_IF_NTSTATUS_FAILED(f(server.get()));
+    }
+    else
     {
         const auto cmd = format(scratch.arena, LR"("%s" --server 0x%zx)", path, server.get());
 
@@ -149,6 +158,7 @@ ConhostHandle spawn_conhost(mem::Arena& arena, const wchar_t* path)
     }
 
     return ConhostHandle{
+        .server = std::move(server),
         .reference = std::move(reference),
         .connection = std::move(connection),
     };
