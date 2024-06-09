@@ -166,7 +166,9 @@ std::wstring_view mem::format(Arena& arena, const wchar_t* fmt, va_list args)
         return {};
     }
 
+    // Make space for a terminating \0 character.
     len++;
+
     const auto buffer = arena.push_uninitialized<wchar_t>(len);
 
     len = _vsnwprintf(buffer, len, fmt, args);
