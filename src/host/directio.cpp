@@ -602,6 +602,7 @@ CATCH_RETURN();
 
 [[nodiscard]] HRESULT _WriteConsoleOutputWImplHelper(SCREEN_INFORMATION& context,
                                                      std::span<CHAR_INFO> buffer,
+                                                     size_t bufferStride,
                                                      const Viewport& requestRectangle,
                                                      Viewport& writtenRectangle) noexcept
 {
@@ -687,7 +688,7 @@ CATCH_RETURN();
         for (; target.y < writeRectangle.BottomExclusive(); target.y++)
         {
             // We find the offset into the original buffer by the dimensions of the original request rectangle.
-            const auto rowOffset = (target.y - requestRectangle.Top()) * requestRectangle.Width();
+            const auto rowOffset = (target.y - requestRectangle.Top()) * bufferStride;
             const auto colOffset = target.x - requestRectangle.Left();
             const auto totalOffset = rowOffset + colOffset;
 
@@ -787,7 +788,7 @@ CATCH_RETURN();
         const auto codepage = gci.OutputCP;
         LOG_IF_FAILED(_ConvertCellsToWInplace(codepage, buffer, requestRectangle));
 
-        RETURN_IF_FAILED(_WriteConsoleOutputWImplHelper(context, buffer, requestRectangle, writtenRectangle));
+        RETURN_IF_FAILED(_WriteConsoleOutputWImplHelper(context, buffer, requestRectangle.Width(), requestRectangle, writtenRectangle));
 
         return S_OK;
     }
@@ -809,11 +810,11 @@ CATCH_RETURN();
             // For compatibility reasons, we must maintain the behavior that munges the data if we are writing while a raster font is enabled.
             // This can be removed when raster font support is removed.
             auto translated = _ConvertCellsToMungedW(buffer, requestRectangle);
-            RETURN_IF_FAILED(_WriteConsoleOutputWImplHelper(context, translated, requestRectangle, writtenRectangle));
+            RETURN_IF_FAILED(_WriteConsoleOutputWImplHelper(context, translated, requestRectangle.Width(), requestRectangle, writtenRectangle));
         }
         else
         {
-            RETURN_IF_FAILED(_WriteConsoleOutputWImplHelper(context, buffer, requestRectangle, writtenRectangle));
+            RETURN_IF_FAILED(_WriteConsoleOutputWImplHelper(context, buffer, requestRectangle.Width(), requestRectangle, writtenRectangle));
         }
 
         return S_OK;

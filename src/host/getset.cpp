@@ -5,20 +5,16 @@
 
 #include "getset.h"
 
-#include "_output.h"
-#include "_stream.h"
-#include "output.h"
-#include "dbcs.h"
+#include "ApiRoutines.h"
+#include "directio.h"
 #include "handle.h"
 #include "misc.h"
-#include "cmdline.h"
-
-#include "../types/inc/convert.hpp"
-#include "../types/inc/viewport.hpp"
-
-#include "ApiRoutines.h"
+#include "output.h"
+#include "_output.h"
 
 #include "../interactivity/inc/ServiceLocator.hpp"
+#include "../types/inc/convert.hpp"
+#include "../types/inc/viewport.hpp"
 
 #pragma hdrstop
 
@@ -384,16 +380,9 @@ void ApiRoutines::GetNumberOfConsoleMouseButtonsImpl(ULONG& buttons) noexcept
                 const auto io = gci.GetVtIo();
                 const auto cork = io->Cork();
 
-                if (WI_IsFlagSet(diff, DISABLE_NEWLINE_AUTO_RETURN))
-                {
-                    char buf[] = "\x1b[20h";
-                    buf[std::size(buf) - 2] = WI_IsFlagClear(mode, DISABLE_NEWLINE_AUTO_RETURN) ? 'h' : 'l';
-                    io->WriteUTF8(buf);
-                }
-
                 if (WI_IsFlagSet(diff, ENABLE_MOUSE_INPUT))
                 {
-                    char buf[] = "\x1b[?1003;1006h";
+                    char buf[] = "\x1b[?1003;1006h"; // Any Event Mouse + SGR Extended Mode
                     buf[std::size(buf) - 2] = WI_IsFlagSet(mode, ENABLE_MOUSE_INPUT) ? 'h' : 'l';
                     io->WriteUTF8(buf);
                 }
@@ -456,8 +445,7 @@ void ApiRoutines::GetNumberOfConsoleMouseButtonsImpl(ULONG& buttons) noexcept
         }
 
         // if we changed rendering modes then redraw the output buffer.
-        if ((WI_IsFlagSet(dwNewMode, ENABLE_VIRTUAL_TERMINAL_PROCESSING) != WI_IsFlagSet(dwOldMode, ENABLE_VIRTUAL_TERMINAL_PROCESSING) ||
-             WI_IsFlagSet(dwNewMode, ENABLE_LVB_GRID_WORLDWIDE) != WI_IsFlagSet(dwOldMode, ENABLE_LVB_GRID_WORLDWIDE)))
+        if (WI_IsAnyFlagSet(diff, ENABLE_VIRTUAL_TERMINAL_PROCESSING | ENABLE_LVB_GRID_WORLDWIDE))
         {
             if (const auto pRender = ServiceLocator::LocateGlobals().pRender)
             {
@@ -465,13 +453,20 @@ void ApiRoutines::GetNumberOfConsoleMouseButtonsImpl(ULONG& buttons) noexcept
             }
         }
 
-        if (WI_IsFlagSet(diff, ENABLE_WRAP_AT_EOL_OUTPUT))
+        auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
+        if (gci.IsInVtIoMode())
         {
-            auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
-            if (gci.IsInVtIoMode())
+            if (WI_IsFlagSet(diff, ENABLE_WRAP_AT_EOL_OUTPUT))
             {
-                char buf[] = "\x1b[?7l"; // DECAWM - Autowrap Mode
+                char buf[] = "\x1b[?7h"; // Autowrap Mode (DECAWM)
                 buf[std::size(buf) - 2] = WI_IsFlagSet(dwNewMode, ENABLE_WRAP_AT_EOL_OUTPUT) ? 'h' : 'l';
+                gci.GetVtIo()->WriteUTF8(buf);
+            }
+
+            if (WI_IsFlagSet(diff, DISABLE_NEWLINE_AUTO_RETURN))
+            {
+                char buf[] = "\x1b[20h"; // Line Feed / New Line Mode (LNM)
+                buf[std::size(buf) - 2] = WI_IsFlagClear(mode, DISABLE_NEWLINE_AUTO_RETURN) ? 'h' : 'l';
                 gci.GetVtIo()->WriteUTF8(buf);
             }
         }
@@ -958,15 +953,6 @@ void ApiRoutines::GetLargestConsoleWindowSizeImpl(const SCREEN_INFORMATION& cont
 
         if (gci.IsInVtIoMode())
         {
-            const auto io = gci.GetVtIo();
-            const auto corkLock = io->Cork();
-            (void)enableCmdShim;
-
-            //til::small_vector<CHAR_INFO, 1024> buffer;
-            //buffer.resize_and_overwrite(1024, [](auto&&) {});
-            //Viewport sourceRead;
-            //RETURN_IF_FAILED(ReadConsoleOutputWImpl(context, {}, Viewport::FromInclusive(source2), sourceRead));
-
             // GH#3126 - This is a shim for cmd's `cls` function. In the
             // legacy console, `cls` is supposed to clear the entire buffer. In
             // conpty however, there's no difference between the viewport and the
@@ -974,17 +960,45 @@ void ApiRoutines::GetLargestConsoleWindowSizeImpl(const SCREEN_INFORMATION& cont
             // matched the way we expect cmd to call it. If it does, then
             // let's manually emit a ^[[3J to the connected terminal, so that their
             // entire buffer will be cleared as well.
-            //auto& buffer = context.GetActiveBuffer();
-            //const auto size = buffer.GetBufferSize();
-            //if (enableCmdShim &&
-            //    source2.left <= 0 && source2.top <= 0 &&
-            //    source2.right >= size.RightInclusive() && source2.bottom >= size.BottomInclusive() &&
-            //    target2.x == 0 && target2.y <= -size.BottomInclusive() &&
-            //    !clip2 &&
-            //    fillCharacter == UNICODE_SPACE && fillAttribute == buffer.GetAttributes().GetLegacyAttributes())
-            //{
-            //    gci.GetVtIo()->WriteUTF8("\x1b[H\x1b[2J\x1b[3J");
-            //}
+            auto& buffer = context.GetActiveBuffer();
+            const auto size = buffer.GetBufferSize();
+            if (enableCmdShim &&
+                source.left <= 0 && source.top <= 0 &&
+                source.right >= size.RightInclusive() && source.bottom >= size.BottomInclusive() &&
+                target.x == 0 && target.y <= -size.BottomInclusive() &&
+                !clip &&
+                fillCharacter == UNICODE_SPACE && fillAttribute == buffer.GetAttributes().GetLegacyAttributes())
+            {
+                gci.GetVtIo()->WriteUTF8("\x1b[H\x1b[2J\x1b[3J");
+                return S_OK;
+            }
+
+            const auto io = gci.GetVtIo();
+            const auto corkLock = io->Cork();
+
+            const auto clipViewport = clip ? Viewport::FromInclusive(*clip) : size;
+            const auto sourceViewport = Viewport::FromInclusive(source);
+            Viewport readViewport;
+            Viewport writtenViewport;
+            
+            const auto w = std::max(0, sourceViewport.Width());
+            const auto h = std::max(0, sourceViewport.Height());
+            const auto a = static_cast<size_t>(w * h);
+            if (a == 0)
+            {
+                return S_OK;
+            }
+
+            til::small_vector<CHAR_INFO, 1024> infos;
+            infos.resize(a, CHAR_INFO{ fillCharacter, fillAttribute });
+            RETURN_IF_FAILED(ReadConsoleOutputWImpl(context, infos, sourceViewport, readViewport));
+
+            const auto targetViewport = Viewport::FromDimensions(target, readViewport.Dimensions()).Clamp(clipViewport);
+            RETURN_IF_FAILED(_WriteConsoleOutputWImplHelper(context, infos, w, targetViewport, writtenViewport));
+
+            infos.clear();
+            infos.resize(a, CHAR_INFO{ fillCharacter, fillAttribute });
+            RETURN_IF_FAILED(_WriteConsoleOutputWImplHelper(context, infos, w, sourceViewport, writtenViewport));
         }
         else
         {

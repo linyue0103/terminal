@@ -60,6 +60,7 @@ namespace mem
         void* _push_uninitialized(size_t bytes, size_t alignment = __STDCPP_DEFAULT_NEW_ALIGNMENT__);
 
         uint8_t* m_alloc = nullptr;
+        size_t m_commit = 0;
         size_t m_pos = 0;
     };
 

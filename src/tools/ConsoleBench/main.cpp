@@ -19,10 +19,15 @@ using MeasurementsPerBenchmark = std::span<Measurements>;
 
 struct BenchmarkContext
 {
-    HWND hwnd;
-    HANDLE input;
-    HANDLE output;
-    int64_t time_limit;
+    bool wants_more() const;
+    void mark_beg();
+    void mark_end();
+    size_t rand();
+
+    HWND hwnd = nullptr;
+    HANDLE input = nullptr;
+    HANDLE output = nullptr;
+
     mem::Arena& arena;
     std::string_view utf8_4Ki;
     std::string_view utf8_128Ki;
@@ -31,12 +36,18 @@ struct BenchmarkContext
     std::span<WORD> attr_4Ki;
     std::span<CHAR_INFO> char_4Ki;
     std::span<INPUT_RECORD> input_4Ki;
+
+    Measurements m_measurements;
+    size_t m_measurements_off = 0;
+    int64_t m_time = 0;
+    int64_t m_time_limit = 0;
+    size_t m_rng_state = 0;
 };
 
 struct Benchmark
 {
     const char* title;
-    void (*exec)(const BenchmarkContext& ctx, Measurements measurements);
+    void (*exec)(BenchmarkContext& ctx);
 };
 
 struct AccumulatedResults
@@ -47,184 +58,134 @@ struct AccumulatedResults
     MeasurementsPerBenchmark* measurments;
 };
 
-constexpr int32_t perf_delta(int64_t beg, int64_t end)
-{
-    return static_cast<int32_t>(end - beg);
-}
-
-constexpr size_t rng(size_t v) noexcept
-{
-    // These constants are the same as used by the PCG family of random number generators.
-    // The 32-Bit version is described in https://doi.org/10.1090/S0025-5718-99-00996-5, Table 5.
-    // The 64-Bit version is the multiplier as used by Donald Knuth for MMIX and found by C. E. Haynes.
-#ifdef _WIN64
-    return v * UINT64_C(6364136223846793005) + UINT64_C(1442695040888963407);
-#else
-    return v * UINT32_C(747796405) + UINT32_C(2891336453);
-#endif
-}
+static constexpr COORD s_buffer_size{ 120, 9001 };
+static constexpr COORD s_viewport_size{ 120, 30 };
 
 static constexpr Benchmark s_benchmarks[] = {
 #if ENABLE_TEST_OUTPUT_WRITE
     Benchmark{
         .title = "WriteConsoleA 4Ki",
-        .exec = [](const BenchmarkContext& ctx, Measurements measurements) {
-            for (auto& d : measurements)
+        .exec = [](BenchmarkContext& ctx) {
+            while (ctx.wants_more())
             {
-                const auto beg = query_perf_counter();
-                WriteConsoleA(ctx.output, ctx.utf8_4Ki.data(), static_cast<DWORD>(ctx.utf8_4Ki.size()), nullptr, nullptr);
-                const auto end = query_perf_counter();
-                d = perf_delta(beg, end);
-
-                if (end >= ctx.time_limit)
-                {
-                    break;
-                }
+                ctx.mark_beg();
+                const auto res = WriteConsoleA(ctx.output, ctx.utf8_4Ki.data(), static_cast<DWORD>(ctx.utf8_4Ki.size()), nullptr, nullptr);
+                ctx.mark_end();
+                debugAssert(res == TRUE);
             }
         },
     },
     Benchmark{
         .title = "WriteConsoleW 4Ki",
-        .exec = [](const BenchmarkContext& ctx, Measurements measurements) {
-            for (auto& d : measurements)
+        .exec = [](BenchmarkContext& ctx) {
+            while (ctx.wants_more())
             {
-                const auto beg = query_perf_counter();
-                WriteConsoleW(ctx.output, ctx.utf16_4Ki.data(), static_cast<DWORD>(ctx.utf16_4Ki.size()), nullptr, nullptr);
-                const auto end = query_perf_counter();
-                d = perf_delta(beg, end);
-
-                if (end >= ctx.time_limit)
-                {
-                    break;
-                }
+                ctx.mark_beg();
+                const auto res = WriteConsoleW(ctx.output, ctx.utf16_4Ki.data(), static_cast<DWORD>(ctx.utf16_4Ki.size()), nullptr, nullptr);
+                ctx.mark_end();
+                debugAssert(res == TRUE);
             }
         },
     },
     Benchmark{
         .title = "WriteConsoleA 128Ki",
-        .exec = [](const BenchmarkContext& ctx, Measurements measurements) {
-            for (auto& d : measurements)
+        .exec = [](BenchmarkContext& ctx) {
+            while (ctx.wants_more())
             {
-                const auto beg = query_perf_counter();
-                WriteConsoleA(ctx.output, ctx.utf8_128Ki.data(), static_cast<DWORD>(ctx.utf8_128Ki.size()), nullptr, nullptr);
-                const auto end = query_perf_counter();
-                d = perf_delta(beg, end);
-
-                if (end >= ctx.time_limit)
-                {
-                    break;
-                }
+                ctx.mark_beg();
+                const auto res = WriteConsoleA(ctx.output, ctx.utf8_128Ki.data(), static_cast<DWORD>(ctx.utf8_128Ki.size()), nullptr, nullptr);
+                ctx.mark_end();
+                debugAssert(res == TRUE);
             }
         },
     },
     Benchmark{
         .title = "WriteConsoleW 128Ki",
-        .exec = [](const BenchmarkContext& ctx, Measurements measurements) {
-            for (auto& d : measurements)
+        .exec = [](BenchmarkContext& ctx) {
+            while (ctx.wants_more())
             {
-                const auto beg = query_perf_counter();
-                WriteConsoleW(ctx.output, ctx.utf16_128Ki.data(), static_cast<DWORD>(ctx.utf16_128Ki.size()), nullptr, nullptr);
-                const auto end = query_perf_counter();
-                d = perf_delta(beg, end);
-
-                if (end >= ctx.time_limit)
-                {
-                    break;
-                }
+                ctx.mark_beg();
+                const auto res = WriteConsoleW(ctx.output, ctx.utf16_128Ki.data(), static_cast<DWORD>(ctx.utf16_128Ki.size()), nullptr, nullptr);
+                ctx.mark_end();
+                debugAssert(res == TRUE);
             }
         },
     },
     Benchmark{
         .title = "WriteConsoleOutputAttribute 4Ki",
-        .exec = [](const BenchmarkContext& ctx, Measurements measurements) {
+        .exec = [](BenchmarkContext& ctx) {
             static constexpr COORD pos{ 0, 0 };
             DWORD written;
 
-            for (auto& d : measurements)
+            while (ctx.wants_more())
             {
-                const auto beg = query_perf_counter();
-                WriteConsoleOutputAttribute(ctx.output, ctx.attr_4Ki.data(), static_cast<DWORD>(ctx.attr_4Ki.size()), pos, &written);
-                const auto end = query_perf_counter();
-                d = perf_delta(beg, end);
-
-                if (end >= ctx.time_limit)
-                {
-                    break;
-                }
+                ctx.mark_beg();
+                const auto res = WriteConsoleOutputAttribute(ctx.output, ctx.attr_4Ki.data(), static_cast<DWORD>(ctx.attr_4Ki.size()), pos, &written);
+                ctx.mark_end();
+                debugAssert(res == TRUE);
             }
         },
     },
     Benchmark{
         .title = "WriteConsoleOutputCharacterW 4Ki",
-        .exec = [](const BenchmarkContext& ctx, Measurements measurements) {
+        .exec = [](BenchmarkContext& ctx) {
             static constexpr COORD pos{ 0, 0 };
             DWORD written;
 
-            for (auto& d : measurements)
+            while (ctx.wants_more())
             {
-                const auto beg = query_perf_counter();
-                WriteConsoleOutputCharacterW(ctx.output, ctx.utf16_4Ki.data(), static_cast<DWORD>(ctx.utf16_4Ki.size()), pos, &written);
-                const auto end = query_perf_counter();
-                d = perf_delta(beg, end);
-
-                if (end >= ctx.time_limit)
-                {
-                    break;
-                }
+                ctx.mark_beg();
+                const auto res = WriteConsoleOutputCharacterW(ctx.output, ctx.utf16_4Ki.data(), static_cast<DWORD>(ctx.utf16_4Ki.size()), pos, &written);
+                ctx.mark_end();
+                debugAssert(res == TRUE);
             }
         },
     },
     Benchmark{
         .title = "WriteConsoleOutputW 4Ki",
-        .exec = [](const BenchmarkContext& ctx, Measurements measurements) {
+        .exec = [](BenchmarkContext& ctx) {
             static constexpr COORD pos{ 0, 0 };
             static constexpr COORD size{ 64, 64 };
             static constexpr SMALL_RECT rect{ 0, 0, 63, 63 };
 
-            for (auto& d : measurements)
+            while (ctx.wants_more())
             {
-                auto r = rect;
+                auto written = rect;
 
-                const auto beg = query_perf_counter();
-                WriteConsoleOutputW(ctx.output, ctx.char_4Ki.data(), size, pos, &r);
-                const auto end = query_perf_counter();
-                d = perf_delta(beg, end);
-
-                if (end >= ctx.time_limit)
-                {
-                    break;
-                }
+                ctx.mark_beg();
+                const auto res = WriteConsoleOutputW(ctx.output, ctx.char_4Ki.data(), size, pos, &written);
+                ctx.mark_end();
+                debugAssert(res == TRUE);
             }
         },
     },
 #endif
 #if ENABLE_TEST_OUTPUT_SCROLL
     Benchmark{
-        .title = "ScrollConsoleScreenBufferW 4K",
-        .exec = [](const BenchmarkContext& ctx, Measurements measurements) {
+        .title = "ScrollConsoleScreenBufferW 4Ki",
+        .exec = [](BenchmarkContext& ctx) {
             for (int i = 0; i < 10; i++)
             {
                 WriteConsoleW(ctx.output, ctx.utf16_128Ki.data(), static_cast<DWORD>(ctx.utf16_128Ki.size()), nullptr, nullptr);
             }
 
             static constexpr CHAR_INFO fill{ L' ', FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED };
-            static constexpr size_t w = 40;
-            static constexpr size_t h = 100;
-            size_t r = rng(0);
+            static constexpr size_t w = 64;
+            static constexpr size_t h = 64;
 
-            for (auto& d : measurements)
+            while (ctx.wants_more())
             {
-                r = rng(r);
-                const auto srcLeft = (r >> 0) % (120 - w);
-                const auto srcTop = (r >> 16) % (9001 - h);
+                auto r = ctx.rand();
+                const auto srcLeft = (r >> 0) % (s_buffer_size.X - w);
+                const auto srcTop = (r >> 16) % (s_buffer_size.Y - h);
 
                 size_t dstLeft;
                 size_t dstTop;
                 do
                 {
-                    r = rng(r);
-                    dstLeft = (r >> 0) % (120 - w);
-                    dstTop = (r >> 16) % (9001 - h);
+                    r = ctx.rand();
+                    dstLeft = (r >> 0) % (s_buffer_size.X - w);
+                    dstTop = (r >> 16) % (s_buffer_size.Y - h);
                 } while (srcLeft == dstLeft && srcTop == dstTop);
 
                 const SMALL_RECT scrollRect{
@@ -238,47 +199,40 @@ static constexpr Benchmark s_benchmarks[] = {
                     .Y = static_cast<SHORT>(dstTop),
                 };
 
-                const auto beg = query_perf_counter();
-                ScrollConsoleScreenBufferW(ctx.output, &scrollRect, nullptr, destOrigin, &fill);
-                const auto end = query_perf_counter();
-                d = perf_delta(beg, end);
-
-                if (end >= ctx.time_limit)
-                {
-                    break;
-                }
+                ctx.mark_beg();
+                const auto res = ScrollConsoleScreenBufferW(ctx.output, &scrollRect, nullptr, destOrigin, &fill);
+                ctx.mark_end();
+                debugAssert(res == TRUE);
             }
         },
     },
     Benchmark{
         .title = "ScrollConsoleScreenBufferW vertical",
-        .exec = [](const BenchmarkContext& ctx, Measurements measurements) {
+        .exec = [](BenchmarkContext& ctx) {
             for (int i = 0; i < 10; i++)
             {
                 WriteConsoleW(ctx.output, ctx.utf16_128Ki.data(), static_cast<DWORD>(ctx.utf16_128Ki.size()), nullptr, nullptr);
             }
 
             static constexpr CHAR_INFO fill{ L' ', FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED };
-            static constexpr size_t w = 120;
-            static constexpr size_t h = 33;
-            size_t r = rng(0);
+            static constexpr size_t h = (4096 + s_buffer_size.X / 2) / s_buffer_size.X;
 
-            for (auto& d : measurements)
+            while (ctx.wants_more())
             {
-                r = rng(r);
-                const auto srcTop = r % (9001 - h);
+                auto r = ctx.rand();
+                const auto srcTop = r % (s_buffer_size.Y - h);
 
                 size_t dstTop;
                 do
                 {
-                    r = rng(r);
-                    dstTop = r % (9001 - h);
+                    r = ctx.rand();
+                    dstTop = r % (s_buffer_size.Y - h);
                 } while (srcTop == dstTop);
 
                 const SMALL_RECT scrollRect{
                     .Left = 0,
                     .Top = static_cast<SHORT>(srcTop),
-                    .Right = 119,
+                    .Right = s_buffer_size.X - 1,
                     .Bottom = static_cast<SHORT>(srcTop + h - 1),
                 };
                 const COORD destOrigin{
@@ -286,15 +240,10 @@ static constexpr Benchmark s_benchmarks[] = {
                     .Y = static_cast<SHORT>(dstTop),
                 };
 
-                const auto beg = query_perf_counter();
-                ScrollConsoleScreenBufferW(ctx.output, &scrollRect, nullptr, destOrigin, &fill);
-                const auto end = query_perf_counter();
-                d = perf_delta(beg, end);
-
-                if (end >= ctx.time_limit)
-                {
-                    break;
-                }
+                ctx.mark_beg();
+                const auto res = ScrollConsoleScreenBufferW(ctx.output, &scrollRect, nullptr, destOrigin, &fill);
+                ctx.mark_end();
+                debugAssert(res == TRUE);
             }
         },
     },
@@ -302,41 +251,31 @@ static constexpr Benchmark s_benchmarks[] = {
 #if ENABLE_TEST_OUTPUT_FILL
     Benchmark{
         .title = "FillConsoleOutputAttribute 4Ki",
-        .exec = [](const BenchmarkContext& ctx, Measurements measurements) {
+        .exec = [](BenchmarkContext& ctx) {
             static constexpr COORD pos{ 0, 0 };
             DWORD written;
 
-            for (auto& d : measurements)
+            while (ctx.wants_more())
             {
-                const auto beg = query_perf_counter();
+                ctx.mark_beg();
                 FillConsoleOutputAttribute(ctx.output, FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED, 4096, pos, &written);
-                const auto end = query_perf_counter();
-                d = perf_delta(beg, end);
-
-                if (end >= ctx.time_limit)
-                {
-                    break;
-                }
+                ctx.mark_end();
+                debugAssert(written == 4096);
             }
         },
     },
     Benchmark{
         .title = "FillConsoleOutputCharacterW 4Ki",
-        .exec = [](const BenchmarkContext& ctx, Measurements measurements) {
+        .exec = [](BenchmarkContext& ctx) {
             static constexpr COORD pos{ 0, 0 };
             DWORD written;
 
-            for (auto& d : measurements)
+            while (ctx.wants_more())
             {
-                const auto beg = query_perf_counter();
+                ctx.mark_beg();
                 FillConsoleOutputCharacterW(ctx.output, L'A', 4096, pos, &written);
-                const auto end = query_perf_counter();
-                d = perf_delta(beg, end);
-
-                if (end >= ctx.time_limit)
-                {
-                    break;
-                }
+                ctx.mark_end();
+                debugAssert(written == 4096);
             }
         },
     },
@@ -344,7 +283,7 @@ static constexpr Benchmark s_benchmarks[] = {
 #if ENABLE_TEST_OUTPUT_READ
     Benchmark{
         .title = "ReadConsoleOutputAttribute 4Ki",
-        .exec = [](const BenchmarkContext& ctx, Measurements measurements) {
+        .exec = [](BenchmarkContext& ctx) {
             static constexpr COORD pos{ 0, 0 };
             const auto scratch = mem::get_scratch_arena(ctx.arena);
             const auto buf = scratch.arena.push_uninitialized<WORD>(4096);
@@ -352,23 +291,18 @@ static constexpr Benchmark s_benchmarks[] = {
 
             WriteConsoleW(ctx.output, ctx.utf16_128Ki.data(), static_cast<DWORD>(ctx.utf16_128Ki.size()), nullptr, nullptr);
 
-            for (auto& d : measurements)
+            while (ctx.wants_more())
             {
-                const auto beg = query_perf_counter();
+                ctx.mark_beg();
                 ReadConsoleOutputAttribute(ctx.output, buf, 4096, pos, &read);
-                const auto end = query_perf_counter();
-                d = perf_delta(beg, end);
-
-                if (end >= ctx.time_limit)
-                {
-                    break;
-                }
+                ctx.mark_end();
+                debugAssert(read == 4096);
             }
         },
     },
     Benchmark{
         .title = "ReadConsoleOutputCharacterW 4Ki",
-        .exec = [](const BenchmarkContext& ctx, Measurements measurements) {
+        .exec = [](BenchmarkContext& ctx) {
             static constexpr COORD pos{ 0, 0 };
             const auto scratch = mem::get_scratch_arena(ctx.arena);
             const auto buf = scratch.arena.push_uninitialized<wchar_t>(4096);
@@ -376,42 +310,34 @@ static constexpr Benchmark s_benchmarks[] = {
 
             WriteConsoleW(ctx.output, ctx.utf16_128Ki.data(), static_cast<DWORD>(ctx.utf16_128Ki.size()), nullptr, nullptr);
 
-            for (auto& d : measurements)
+            while (ctx.wants_more())
             {
-                const auto beg = query_perf_counter();
+                ctx.mark_beg();
                 ReadConsoleOutputCharacterW(ctx.output, buf, 4096, pos, &read);
-                const auto end = query_perf_counter();
-                d = perf_delta(beg, end);
-
-                if (end >= ctx.time_limit)
-                {
-                    break;
-                }
+                ctx.mark_end();
+                debugAssert(read == 4096);
             }
         },
     },
     Benchmark{
         .title = "ReadConsoleOutputW 4Ki",
-        .exec = [](const BenchmarkContext& ctx, Measurements measurements) {
+        .exec = [](BenchmarkContext& ctx) {
             static constexpr COORD pos{ 0, 0 };
             static constexpr COORD size{ 64, 64 };
+            static constexpr SMALL_RECT rect{ 0, 0, 63, 63 };
             const auto scratch = mem::get_scratch_arena(ctx.arena);
             const auto buf = scratch.arena.push_uninitialized<CHAR_INFO>(size.X * size.Y);
-            SMALL_RECT read;
 
             WriteConsoleW(ctx.output, ctx.utf16_128Ki.data(), static_cast<DWORD>(ctx.utf16_128Ki.size()), nullptr, nullptr);
 
-            for (auto& d : measurements)
+            while (ctx.wants_more())
             {
-                const auto beg = query_perf_counter();
-                ReadConsoleOutputW(ctx.output, buf, size, pos, &read);
-                const auto end = query_perf_counter();
-                d = perf_delta(beg, end);
+                auto read = rect;
 
-                if (end >= ctx.time_limit)
-                {
-                    break;
-                }
+                ctx.mark_beg();
+                ReadConsoleOutputW(ctx.output, buf, size, pos, &read);
+                ctx.mark_end();
+                debugAssert(read.Right == 63 && read.Bottom == 63);
             }
         },
     },
@@ -419,58 +345,46 @@ static constexpr Benchmark s_benchmarks[] = {
 #if ENABLE_TEST_INPUT
     Benchmark{
         .title = "WriteConsoleInputW 4Ki",
-        .exec = [](const BenchmarkContext& ctx, Measurements measurements) {
+        .exec = [](BenchmarkContext& ctx) {
             DWORD written;
 
             FlushConsoleInputBuffer(ctx.input);
 
-            for (auto& d : measurements)
+            while (ctx.wants_more())
             {
-                const auto beg = query_perf_counter();
+                ctx.mark_beg();
                 WriteConsoleInputW(ctx.input, ctx.input_4Ki.data(), static_cast<DWORD>(ctx.input_4Ki.size()), &written);
+                ctx.mark_end();
                 debugAssert(written == ctx.input_4Ki.size());
-                const auto end = query_perf_counter();
-                d = perf_delta(beg, end);
 
                 FlushConsoleInputBuffer(ctx.input);
-
-                if (end >= ctx.time_limit)
-                {
-                    break;
-                }
             }
         },
     },
     Benchmark{
         .title = "ReadConsoleInputW 4Ki",
-        .exec = [](const BenchmarkContext& ctx, Measurements measurements) {
+        .exec = [](BenchmarkContext& ctx) {
             const auto scratch = mem::get_scratch_arena(ctx.arena);
             const auto buf = scratch.arena.push_uninitialized<INPUT_RECORD>(ctx.input_4Ki.size());
             DWORD written, read;
 
             FlushConsoleInputBuffer(ctx.input);
 
-            for (auto& d : measurements)
+            while (ctx.wants_more())
             {
                 WriteConsoleInputW(ctx.input, ctx.input_4Ki.data(), static_cast<DWORD>(ctx.input_4Ki.size()), &written);
                 debugAssert(written == ctx.input_4Ki.size());
 
-                const auto beg = query_perf_counter();
+                ctx.mark_beg();
                 ReadConsoleInputW(ctx.input, buf, static_cast<DWORD>(ctx.input_4Ki.size()), &read);
+                ctx.mark_end();
                 debugAssert(read == ctx.input_4Ki.size());
-                const auto end = query_perf_counter();
-                d = perf_delta(beg, end);
-
-                if (end >= ctx.time_limit)
-                {
-                    break;
-                }
             }
         },
     },
     Benchmark{
         .title = "ReadConsoleW 4Ki",
-        .exec = [](const BenchmarkContext& ctx, Measurements measurements) {
+        .exec = [](BenchmarkContext& ctx) {
             const auto scratch = mem::get_scratch_arena(ctx.arena);
             const auto cap = static_cast<DWORD>(ctx.input_4Ki.size()) * 4;
             const auto buf = scratch.arena.push_uninitialized<wchar_t>(cap);
@@ -478,21 +392,15 @@ static constexpr Benchmark s_benchmarks[] = {
 
             FlushConsoleInputBuffer(ctx.input);
 
-            for (auto& d : measurements)
+            while (ctx.wants_more())
             {
                 WriteConsoleInputW(ctx.input, ctx.input_4Ki.data(), static_cast<DWORD>(ctx.input_4Ki.size()), &written);
                 debugAssert(written == ctx.input_4Ki.size());
 
-                const auto beg = query_perf_counter();
+                ctx.mark_beg();
                 ReadConsoleW(ctx.input, buf, cap, &read, nullptr);
                 debugAssert(read == ctx.input_4Ki.size());
-                const auto end = query_perf_counter();
-                d = perf_delta(beg, end);
-
-                if (end >= ctx.time_limit)
-                {
-                    break;
-                }
+                ctx.mark_end();
             }
         },
     },
@@ -500,62 +408,53 @@ static constexpr Benchmark s_benchmarks[] = {
 #if ENABLE_TEST_CLIPBOARD
     Benchmark{
         .title = "Clipboard copy 4Ki",
-        .exec = [](const BenchmarkContext& ctx, Measurements measurements) {
+        .exec = [](BenchmarkContext& ctx) {
             WriteConsoleW(ctx.output, ctx.utf16_4Ki.data(), static_cast<DWORD>(ctx.utf8_4Ki.size()), nullptr, nullptr);
 
-            for (auto& d : measurements)
+            while (ctx.wants_more())
             {
                 SendMessageW(ctx.hwnd, WM_SYSCOMMAND, 0xFFF5 /* ID_CONSOLE_SELECTALL */, 0);
 
-                const auto beg = query_perf_counter();
+                ctx.mark_beg();
                 SendMessageW(ctx.hwnd, WM_SYSCOMMAND, 0xFFF0 /* ID_CONSOLE_COPY */, 0);
-                const auto end = query_perf_counter();
-                d = perf_delta(beg, end);
-
-                if (end >= ctx.time_limit)
-                {
-                    break;
-                }
+                ctx.mark_end();
             }
         },
     },
     Benchmark{
         .title = "Clipboard paste 4Ki",
-        .exec = [](const BenchmarkContext& ctx, Measurements measurements) {
+        .exec = [](BenchmarkContext& ctx) {
             set_clipboard(ctx.hwnd, ctx.utf16_4Ki);
             FlushConsoleInputBuffer(ctx.input);
 
-            for (auto& d : measurements)
+            while (ctx.wants_more())
             {
-                const auto beg = query_perf_counter();
+                ctx.mark_beg();
                 SendMessageW(ctx.hwnd, WM_SYSCOMMAND, 0xFFF1 /* ID_CONSOLE_PASTE */, 0);
-                const auto end = query_perf_counter();
-                d = perf_delta(beg, end);
+                ctx.mark_end();
 
                 FlushConsoleInputBuffer(ctx.input);
-
-                if (end >= ctx.time_limit)
-                {
-                    break;
-                }
             }
         },
     },
 #endif
 };
+
 static constexpr size_t s_benchmarks_count = _countof(s_benchmarks);
+static constexpr size_t s_samples_min = 20;
+static constexpr size_t s_samples_max = 1000;
 
 // 128 characters and 124 columns.
-static constexpr std::string_view payload_utf8{ "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna alΑΒΓΔΕ" };
+static constexpr std::string_view s_payload_utf8{ "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna alΑΒΓΔΕ" };
 // 128 characters and 128 columns.
-static constexpr std::wstring_view payload_utf16{ L"Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.ΑΒΓΔΕ" };
+static constexpr std::wstring_view s_payload_utf16{ L"Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.ΑΒΓΔΕ" };
 
-static constexpr WORD payload_attr = FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED;
-static constexpr CHAR_INFO payload_char{
+static constexpr WORD s_payload_attr = FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED;
+static constexpr CHAR_INFO s_payload_char{
     .Char = { .UnicodeChar = L'A' },
-    .Attributes = payload_attr,
+    .Attributes = s_payload_attr,
 };
-static constexpr INPUT_RECORD payload_record{
+static constexpr INPUT_RECORD s_payload_record{
     .EventType = KEY_EVENT,
     .Event = {
         .KeyEvent = {
@@ -612,6 +511,13 @@ try
     {
         const auto title = results->trace_names[trace_idx];
         print_format(scratch.arena, "\r\n# %.*s\r\n", title.size(), title.data());
+
+        // I found that waiting between tests fixes weird bugs when launching very old conhost versions.
+        if (trace_idx != 0)
+        {
+            Sleep(5000);
+        }
+
         results->measurments[trace_idx] = run_benchmarks_for_path(scratch.arena, paths[trace_idx]);
     }
 
@@ -709,7 +615,7 @@ static AccumulatedResults* prepare_results(mem::Arena& arena, std::span<const wc
     return results;
 }
 
-static void prepare_conhost(const BenchmarkContext& ctx, HWND parent_hwnd)
+static void prepare_conhost(BenchmarkContext& ctx, HWND parent_hwnd)
 {
     const auto scratch = mem::get_scratch_arena(ctx.arena);
 
@@ -736,18 +642,18 @@ static void prepare_conhost(const BenchmarkContext& ctx, HWND parent_hwnd)
         SMALL_RECT info{
             .Left = 0,
             .Top = 0,
-            .Right = 119,
-            .Bottom = 29,
+            .Right = s_viewport_size.X - 1,
+            .Bottom = s_viewport_size.Y - 1,
         };
-        SetConsoleScreenBufferSize(ctx.output, { 120, 9001 });
+        SetConsoleScreenBufferSize(ctx.output, s_buffer_size);
         SetConsoleWindowInfo(ctx.output, TRUE, &info);
     }
 
     // Ensure conhost's backing TextBuffer is fully committed and initialized. There's currently no way
     // to un-commit it and so not committing it now would be unfair for the first test that runs.
-    const auto buf = scratch.arena.push_uninitialized<char>(9001);
-    memset(buf, '\n', 9001);
-    WriteFile(ctx.output, buf, 9001, nullptr, nullptr);
+    const auto buf = scratch.arena.push_uninitialized<char>(s_buffer_size.Y);
+    memset(buf, '\n', s_buffer_size.Y);
+    WriteFile(ctx.output, buf, s_buffer_size.Y, nullptr, nullptr);
 }
 
 static std::span<Measurements> run_benchmarks_for_path(mem::Arena& arena, const wchar_t* path)
@@ -770,48 +676,56 @@ static std::span<Measurements> run_benchmarks_for_path(mem::Arena& arena, const 
         .hwnd = GetConsoleWindow(),
         .input = GetStdHandle(STD_INPUT_HANDLE),
         .output = GetStdHandle(STD_OUTPUT_HANDLE),
+
         .arena = scratch.arena,
-        .utf8_4Ki = mem::repeat(scratch.arena, payload_utf8, 4 * 1024 / payload_utf8.size()),
-        .utf8_128Ki = mem::repeat(scratch.arena, payload_utf8, 128 * 1024 / payload_utf8.size()),
-        .utf16_4Ki = mem::repeat(scratch.arena, payload_utf16, 4 * 1024 / payload_utf16.size()),
-        .utf16_128Ki = mem::repeat(scratch.arena, payload_utf16, 128 * 1024 / payload_utf16.size()),
-        .attr_4Ki = mem::repeat(scratch.arena, payload_attr, 4 * 1024),
-        .char_4Ki = mem::repeat(scratch.arena, payload_char, 4 * 1024),
-        .input_4Ki = mem::repeat(scratch.arena, payload_record, 4 * 1024),
+        .utf8_4Ki = mem::repeat(scratch.arena, s_payload_utf8, 4 * 1024 / s_payload_utf8.size()),
+        .utf8_128Ki = mem::repeat(scratch.arena, s_payload_utf8, 128 * 1024 / s_payload_utf8.size()),
+        .utf16_4Ki = mem::repeat(scratch.arena, s_payload_utf16, 4 * 1024 / s_payload_utf16.size()),
+        .utf16_128Ki = mem::repeat(scratch.arena, s_payload_utf16, 128 * 1024 / s_payload_utf16.size()),
+        .attr_4Ki = mem::repeat(scratch.arena, s_payload_attr, 4 * 1024),
+        .char_4Ki = mem::repeat(scratch.arena, s_payload_char, 4 * 1024),
+        .input_4Ki = mem::repeat(scratch.arena, s_payload_record, 4 * 1024),
+
+        .m_measurements = scratch.arena.push_uninitialized_span<int32_t>(4 * 1024 * 1024),
     };
 
     prepare_conhost(ctx, parent_hwnd);
     Sleep(1000);
 
     const auto results = arena.push_uninitialized_span<Measurements>(s_benchmarks_count);
-    for (auto& measurements : results)
-    {
-        measurements = arena.push_zeroed_span<int32_t>(2048);
-    }
 
     for (size_t bench_idx = 0; bench_idx < s_benchmarks_count; ++bench_idx)
     {
         const auto& bench = s_benchmarks[bench_idx];
-        auto& measurements = results[bench_idx];
 
         print_with_parent_connection("- %s", bench.title);
 
         // Warmup for 0.1s max.
         WriteConsoleW(ctx.output, L"\033c", 2, nullptr, nullptr);
-        ctx.time_limit = query_perf_counter() + freq / 10;
-        bench.exec(ctx, measurements);
+        ctx.m_measurements_off = 0;
+        ctx.m_time_limit = query_perf_counter() + freq / 10;
+        bench.exec(ctx);
 
-        // Actual run for 1s max.
+        // Actual run for 3s max.
         WriteConsoleW(ctx.output, L"\033c", 2, nullptr, nullptr);
-        ctx.time_limit = query_perf_counter() + freq;
-        bench.exec(ctx, measurements);
+        ctx.m_measurements_off = 0;
+        ctx.m_time_limit = query_perf_counter() + freq * 3;
+        bench.exec(ctx);
 
-        // Trim off trailing 0s that resulted from the time_limit.
-        size_t len = measurements.size();
-        for (; len > 0 && measurements[len - 1] == 0; --len)
+        const auto measurements = arena.push_uninitialized_span<int32_t>(std::min(ctx.m_measurements_off, s_samples_max));
+        if (ctx.m_measurements_off <= s_samples_max)
         {
+            mem::copy(measurements.data(), ctx.m_measurements.data(), ctx.m_measurements_off);
         }
-        measurements = measurements.subspan(0, len);
+        else
+        {
+            const auto total = ctx.m_measurements_off;
+            for (size_t i = 0; i < s_samples_max; ++i)
+            {
+                measurements[i] = ctx.m_measurements[i * total / s_samples_max];
+            }
+        }
+        results[bench_idx] = measurements;
 
         print_with_parent_connection(", done\r\n");
     }
@@ -859,7 +773,7 @@ static void generate_html(mem::Arena& arena, const AccumulatedResults* results)
 </head>
 
 <body>
-    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js" charset="utf-8"></script>
+    <script src="https://cdn.plot.ly/plotly-2.32.0.min.js" charset="utf-8"></script>
     <script>
 )");
 
@@ -899,7 +813,7 @@ static void generate_html(mem::Arena& arena, const AccumulatedResults* results)
                     {
                     }
 
-                    for (auto it = beg; it < end; ++it)
+                    for (auto it = beg; it != end; ++it)
                     {
                         char buffer[32];
                         const auto res = std::to_chars(&buffer[0], &buffer[64], *it * sec_per_tick, std::chars_format::scientific, 3);
@@ -948,4 +862,34 @@ static void generate_html(mem::Arena& arena, const AccumulatedResults* results)
 
 </html>
 )");
+}
+
+bool BenchmarkContext::wants_more() const
+{
+    return m_measurements_off < s_samples_min || (m_measurements_off < m_measurements.size() && m_time < m_time_limit);
+}
+
+void BenchmarkContext::mark_beg()
+{
+    m_time = query_perf_counter();
+}
+
+void BenchmarkContext::mark_end()
+{
+    const auto end = query_perf_counter();
+    m_measurements[m_measurements_off++] = static_cast<int32_t>(end - m_time);
+    m_time = end;
+}
+
+size_t BenchmarkContext::rand()
+{
+    // These constants are the same as used by the PCG family of random number generators.
+    // The 32-Bit version is described in https://doi.org/10.1090/S0025-5718-99-00996-5, Table 5.
+    // The 64-Bit version is the multiplier as used by Donald Knuth for MMIX and found by C. E. Haynes.
+#ifdef _WIN64
+    m_rng_state = m_rng_state * UINT64_C(6364136223846793005) + UINT64_C(1442695040888963407);
+#else
+    m_rng_state = m_rng_state * UINT32_C(747796405) + UINT32_C(2891336453);
+#endif
+    return m_rng_state;
 }

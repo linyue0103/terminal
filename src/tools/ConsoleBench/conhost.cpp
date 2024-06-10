@@ -165,7 +165,6 @@ ConhostHandle spawn_conhost(mem::Arena& arena, const wchar_t* path)
     }
 
     return ConhostHandle{
-        .server = std::move(server),
         .reference = std::move(reference),
         .connection = std::move(connection),
     };
