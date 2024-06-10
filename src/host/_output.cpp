@@ -8,10 +8,11 @@
 #include "directio.h"
 #include "handle.h"
 #include "misc.h"
+#include "_stream.h"
 
 #include "../interactivity/inc/ServiceLocator.hpp"
-#include "../types/inc/Viewport.hpp"
 #include "../types/inc/convert.hpp"
+#include "../types/inc/Viewport.hpp"
 
 using namespace Microsoft::Console::Types;
 using Microsoft::Console::Interactivity::ServiceLocator;
@@ -230,17 +231,23 @@ void WriteToScreen(SCREEN_INFORMATION& screenInfo, const Viewport& region)
 
             const auto viewport = Viewport::FromDimensions({ 0, startingCoordinate.y }, { bufferSize.Width(), gsl::narrow<til::CoordType>(rows) });
             Viewport readViewport;
-            Viewport writtenViewport;
 
             til::small_vector<CHAR_INFO, 1024> infos;
-            infos.resize(lengthToWrite, CHAR_INFO{ L' ', FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED });
+            infos.resize(lengthToWrite, CHAR_INFO{ L' ', attribute });
             RETURN_IF_FAILED(ReadConsoleOutputWImpl(OutContext, infos, viewport, readViewport));
 
+            bool anyChanged = false;
             for (auto& info : infos)
             {
+                anyChanged |= info.Attributes != attribute;
                 info.Attributes = attribute;
             }
-            RETURN_IF_FAILED(_WriteConsoleOutputWImplHelper(OutContext, infos, viewport.Width(), readViewport, writtenViewport));
+
+            if (anyChanged)
+            {
+                Viewport writtenViewport;
+                RETURN_IF_FAILED(_WriteConsoleOutputWImplHelper(OutContext, infos, viewport.Width(), readViewport, writtenViewport));
+            }
 
             cellsModified = distance;
         }
@@ -330,7 +337,9 @@ void WriteToScreen(SCREEN_INFORMATION& screenInfo, const Viewport& region)
 
                 if (wroteWholeBuffer && startedAtOrigin && wroteSpaces)
                 {
-                    gci.GetVtIo()->WriteUTF8("\x1b[H\x1b[2J\x1b[3J");
+                    WriteCharsVT(OutContext, L"\x1b[H\x1b[2J\x1b[3J");
+                    cellsModified = lengthToWrite;
+                    return S_OK;
                 }
             }
 
@@ -353,17 +362,23 @@ void WriteToScreen(SCREEN_INFORMATION& screenInfo, const Viewport& region)
 
             const auto viewport = Viewport::FromDimensions({ 0, startingCoordinate.y }, { bufferSize.Width(), gsl::narrow<til::CoordType>(rows) });
             Viewport readViewport;
-            Viewport writtenViewport;
 
             til::small_vector<CHAR_INFO, 1024> infos;
-            infos.resize(lengthToWrite, CHAR_INFO{ L' ', FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED });
+            infos.resize(lengthToWrite, CHAR_INFO{ character, FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED });
             RETURN_IF_FAILED(ReadConsoleOutputWImpl(OutContext, infos, viewport, readViewport));
 
+            bool anyChanged = false;
             for (auto& info : infos)
             {
+                anyChanged |= info.Char.UnicodeChar != character;
                 info.Char.UnicodeChar = character;
             }
-            RETURN_IF_FAILED(_WriteConsoleOutputWImplHelper(OutContext, infos, viewport.Width(), readViewport, writtenViewport));
+
+            if (anyChanged)
+            {
+                Viewport writtenViewport;
+                RETURN_IF_FAILED(_WriteConsoleOutputWImplHelper(OutContext, infos, viewport.Width(), readViewport, writtenViewport));
+            }
 
             cellsModified = distance;
         }
