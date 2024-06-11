@@ -302,6 +302,13 @@ void COOKED_READ_DATA::MigrateUserBuffersOnTransitionToBackgroundWait(const void
 // - controlKeyState - For some types of reads, this is the modifier key state with the last button press.
 bool COOKED_READ_DATA::Read(const bool isUnicode, size_t& numBytes, ULONG& controlKeyState)
 {
+    auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
+    Microsoft::Console::VirtualTerminal::VtIo::CorkLock corkLock;
+    if (gci.IsInVtIoMode())
+    {
+        corkLock = gci.GetVtIo()->Cork();
+    }
+
     controlKeyState = 0;
 
     _readCharInputLoop();
@@ -1482,7 +1489,7 @@ void COOKED_READ_DATA::_popupDrawCommandList(Popup& popup) const
         }
         else if (selected)
         {
-            buffer.append(csi("7m") csi("K") "▶ ");
+            buffer.append(csi("7m") "▸ ");
             buffer.append(str);
             buffer.append(csi("27m"));
         }
