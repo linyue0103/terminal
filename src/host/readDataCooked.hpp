@@ -159,6 +159,7 @@ private:
     void _offsetCursorPosition(ptrdiff_t distance) const;
     void _offsetCursorPositionAlways(ptrdiff_t distance) const;
     til::CoordType _getColumnAtRelativeCursorPosition(ptrdiff_t distance) const;
+    size_t _layoutLine(std::wstring& output, const std::wstring_view& input, size_t inputOffset, til::CoordType columnBegin, til::CoordType columnLimit) const;
 
     void _popupPush(PopupKind kind);
     void _popupsDone();
@@ -167,8 +168,9 @@ private:
     void _popupHandleCommandNumberInput(Popup& popup, wchar_t wch, uint16_t vkey, DWORD modifiers);
     void _popupHandleCommandListInput(Popup& popup, wchar_t wch, uint16_t vkey, DWORD modifiers);
     void _popupHandleInput(wchar_t wch, uint16_t vkey, DWORD keyState);
-    void _popupDrawPrompt(const Popup& popup, UINT id) const;
-    void _popupDrawCommandList(Popup& popup) const;
+    void _popupDrawPrompt(const Popup& popup, UINT id);
+    void _popupDrawCommandList(Popup& popup);
+    const std::wstring& _getPopupAttr();
 
     SCREEN_INFORMATION& _screenInfo;
     std::span<char> _userBuffer;
@@ -190,4 +192,5 @@ private:
     State _state = State::Accumulating;
 
     std::vector<Popup> _popups;
+    std::wstring _popupAttr;
 };

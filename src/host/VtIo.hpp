@@ -22,8 +22,8 @@ namespace Microsoft::Console::VirtualTerminal
 
             CorkLock(const CorkLock&) = delete;
             CorkLock& operator=(const CorkLock&) = delete;
-            CorkLock(CorkLock&& other);
-            CorkLock& operator=(CorkLock&& other);
+            CorkLock(CorkLock&& other) noexcept;
+            CorkLock& operator=(CorkLock&& other) noexcept;
 
         private:
             VtIo* _io = nullptr;
@@ -32,7 +32,8 @@ namespace Microsoft::Console::VirtualTerminal
         friend struct CorkLock;
 
         static bool IsControlCharacter(wchar_t wch) noexcept;
-        static void SetAttributes(std::string& target, WORD attributes);
+        static void FormatAttributes(std::string& target, WORD attributes);
+        static void FormatAttributes(std::wstring& target, WORD attributes);
 
         [[nodiscard]] HRESULT Initialize(const ConsoleArguments* const pArgs);
         [[nodiscard]] HRESULT CreateAndStartSignalThread() noexcept;

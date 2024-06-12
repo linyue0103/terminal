@@ -32,12 +32,12 @@ VtIo::CorkLock::~CorkLock() noexcept
     }
 }
 
-VtIo::CorkLock::CorkLock(CorkLock&& other) :
+VtIo::CorkLock::CorkLock(CorkLock&& other) noexcept :
     _io{ std::exchange(other._io, nullptr) }
 {
 }
 
-VtIo::CorkLock& VtIo::CorkLock::operator=(CorkLock&& other)
+VtIo::CorkLock& VtIo::CorkLock::operator=(CorkLock&& other) noexcept
 {
     if (this != &other)
     {
@@ -59,7 +59,7 @@ bool VtIo::IsControlCharacter(wchar_t wch) noexcept
     return (wch <= 0x1f) | (static_cast<wchar_t>(wch - 0x7f) <= 0x20);
 }
 
-void VtIo::SetAttributes(std::string& target, WORD attributes)
+static size_t formatAttributes(char (&buffer)[16], WORD attributes) noexcept
 {
     const uint8_t rv = WI_IsFlagSet(attributes, COMMON_LVB_REVERSE_VIDEO) ? 7 : 27;
     uint8_t fg = 39;
@@ -77,7 +77,28 @@ void VtIo::SetAttributes(std::string& target, WORD attributes)
         bg = lut[(attributes >> 4) & 0xf] + 10;
     }
 
-    fmt::format_to(std::back_inserter(target), FMT_COMPILE("\x1b[{};{};{}m"), rv, fg, bg);
+    return fmt::format_to(&buffer[0], FMT_COMPILE("\x1b[{};{};{}m"), rv, fg, bg) - &buffer[0];
+}
+
+void VtIo::FormatAttributes(std::string& target, WORD attributes)
+{
+    char buf[16];
+    const auto len = formatAttributes(buf, attributes);
+    target.append(buf, len);
+}
+
+void VtIo::FormatAttributes(std::wstring& target, WORD attributes)
+{
+    char buf[16];
+    const auto len = formatAttributes(buf, attributes);
+
+    wchar_t bufW[16];
+    for (size_t i = 0; i < len; i++)
+    {
+        bufW[i] = buf[i];
+    }
+
+    target.append(bufW, len);
 }
 
 [[nodiscard]] HRESULT VtIo::Initialize(const ConsoleArguments* const pArgs)
@@ -382,7 +403,7 @@ void VtIo::WriteUCS2(wchar_t ch)
 
 void VtIo::WriteAttributes(WORD attributes)
 {
-    SetAttributes(_buffer, attributes);
+    FormatAttributes(_buffer, attributes);
     _flush();
 }
 

@@ -18,6 +18,7 @@
 #define csi(x) L"\x1b[" x
 
 using Microsoft::Console::Interactivity::ServiceLocator;
+using Microsoft::Console::VirtualTerminal::VtIo;
 
 // As per https://graphics.stanford.edu/~seander/bithacks.html#IntegerLog10Obvious
 constexpr int integerLog10(uint32_t v)
@@ -303,7 +304,7 @@ void COOKED_READ_DATA::MigrateUserBuffersOnTransitionToBackgroundWait(const void
 bool COOKED_READ_DATA::Read(const bool isUnicode, size_t& numBytes, ULONG& controlKeyState)
 {
     auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
-    Microsoft::Console::VirtualTerminal::VtIo::CorkLock corkLock;
+    VtIo::CorkLock corkLock;
     if (gci.IsInVtIoMode())
     {
         corkLock = gci.GetVtIo()->Cork();
@@ -1115,6 +1116,72 @@ til::CoordType COOKED_READ_DATA::_getColumnAtRelativeCursorPosition(ptrdiff_t di
     return x;
 }
 
+size_t COOKED_READ_DATA::_layoutLine(std::wstring& output, const std::wstring_view& input, size_t inputOffset, til::CoordType columnBegin, til::CoordType columnLimit) const
+{
+    const auto& textBuffer = _screenInfo.GetTextBufferAcceptable();
+
+    const auto beg = input.data();
+    const auto end = beg + input.size();
+    auto it = beg + std::min(inputOffset, input.size());
+    auto column = columnBegin;
+
+    while (it != end)
+    {
+        const auto nextControlChar = std::find_if(it, end, [](const auto& wch) { return wch < L' '; });
+        if (it != nextControlChar)
+        {
+            std::wstring_view text{ it, nextControlChar };
+            til::CoordType cols = 0;
+            const auto len = textBuffer.FitTextIntoColumns(text, columnLimit - column, cols);
+
+            output.append(text, 0, len);
+            column += cols;
+            it += len;
+
+            if (len < text.size())
+            {
+                break;
+            }
+            if (it == end)
+            {
+                break;
+            }
+        }
+
+        const auto wch = *it++;
+        wchar_t buf[8];
+        til::CoordType len = 0;
+
+        if (wch == UNICODE_TAB)
+        {
+            const auto remaining = columnLimit - column;
+            len = std::min(8 - (column & 7), remaining);
+            std::fill_n(&buf[0], len, L' ');
+        }
+        else
+        {
+            buf[0] = L'^';
+            buf[1] = wch + L'@';
+            len = 2;
+        }
+
+        if (column + len <= columnLimit)
+        {
+            column += len;
+            output.append(buf, len);
+        }
+    }
+
+    const size_t offset = it - beg;
+
+    if (offset < input.size() && column < columnLimit)
+    {
+        output.append(columnLimit - column, L' ');
+    }
+
+    return offset;
+}
+
 // If the viewport is large enough to fit a popup, this function prepares everything for
 // showing the given type. It handles computing the size of the popup, its position,
 // backs the affected area up and draws the border and initial contents.
@@ -1236,7 +1303,7 @@ catch (...)
 // Pressing F7 followed by F9 (CommandNumber on top of CommandList).
 void COOKED_READ_DATA::_popupsDone()
 {
-    // Clear to end of screen, restore cursor position, show cursor.
+    // Restore cursor position, Clear to end of screen, show cursor.
     WriteCharsVT(_screenInfo, esc("8") csi("J") csi("?25h"));
     _popups.clear();
     _buffer.Suspend(false);
@@ -1437,27 +1504,30 @@ void COOKED_READ_DATA::_popupHandleCommandListInput(Popup& popup, const wchar_t 
     _popupDrawCommandList(popup);
 }
 
-void COOKED_READ_DATA::_popupDrawPrompt(const Popup& popup, const UINT id) const
+void COOKED_READ_DATA::_popupDrawPrompt(const Popup& popup, const UINT id)
 {
     const auto text = _LoadString(id);
-    WriteCharsVT(_screenInfo, csi("3m"));
-    WriteCharsVT(_screenInfo, text);
-    WriteCharsVT(_screenInfo, csi("23m"));
+    const auto& popupAttr = _getPopupAttr();
+    std::wstring buffer;
+    buffer.append(popupAttr);
+    buffer.append(text);
+    buffer.append(csi("m"));
+    WriteCharsVT(_screenInfo, buffer);
 }
 
-void COOKED_READ_DATA::_popupDrawCommandList(Popup& popup) const
+void COOKED_READ_DATA::_popupDrawCommandList(Popup& popup)
 {
     assert(popup.kind == PopupKind::CommandList);
 
+    const auto& textBuffer = _screenInfo.GetTextBufferAcceptable();
     auto& cl = popup.commandList;
-    const auto max = _history->GetNumberOfCommands();
-    const auto width = popup.contentRect.narrow_width<size_t>();
-    const auto height = std::min(popup.contentRect.height(), _history->GetNumberOfCommands());
+    const auto historySize = _history->GetNumberOfCommands();
+    const auto height = std::min(popup.contentRect.height(), historySize);
     const auto dirtyHeight = std::max(height, cl.dirtyHeight);
 
     {
         // The viewport movement of the popup is anchored around the current selection first and foremost.
-        cl.selected = std::clamp(cl.selected, 0, max - 1);
+        cl.selected = std::clamp(cl.selected, 0, historySize - 1);
 
         // It then lazily follows it when the selection goes out of the viewport.
         if (cl.selected < cl.top)
@@ -1469,37 +1539,71 @@ void COOKED_READ_DATA::_popupDrawCommandList(Popup& popup) const
             cl.top = cl.selected - height + 1;
         }
 
-        cl.top = std::clamp(cl.top, 0, max - height);
+        cl.top = std::clamp(cl.top, 0, historySize - height);
     }
 
+    const auto& popupAttr = _getPopupAttr();
     std::wstring buffer;
-    buffer.append(esc("8"));
+    buffer.append(esc("8") csi("J"));
 
     for (til::CoordType off = 0; off < dirtyHeight; ++off)
     {
-        const auto y = popup.contentRect.top + off;
         const auto historyIndex = cl.top + off;
         const auto str = _history->GetNth(historyIndex);
         const auto selected = off == cl.selected;
 
         buffer.append(L"\r\n");
+
         if (str.empty())
         {
             buffer.append(csi("K"));
+            continue;
         }
-        else if (selected)
+
+        buffer.append(popupAttr);
+
+        wchar_t scrollbarChar = L' ';
+        if (selected)
         {
-            buffer.append(csi("7m") "▸ ");
-            buffer.append(str);
-            buffer.append(csi("27m"));
+            scrollbarChar = L'▸';
         }
-        else
+        else if (historySize >= 10)
         {
-            buffer.append(csi("K") "  ");
-            buffer.append(str);
+            if (off == 0)
+            {
+                scrollbarChar = L'▲';
+            }
+            else if (off == historySize - 1)
+            {
+                scrollbarChar = L'▼';
+            }
+        }
+
+        buffer.push_back(scrollbarChar);
+        buffer.append(csi("m") " ");
+
+        if (selected)
+        {
+            buffer.append(popupAttr);
+        }
+
+        _layoutLine(buffer, str, 0, 2, popup.contentRect.width());
+
+        if (selected)
+        {
+            buffer.append(csi("m"));
         }
     }
 
     WriteCharsVT(_screenInfo, buffer);
     cl.dirtyHeight = height;
+}
+
+const std::wstring& COOKED_READ_DATA::_getPopupAttr()
+{
+    if (_popupAttr.empty())
+    {
+        VtIo::FormatAttributes(_popupAttr, _screenInfo.GetPopupAttributes().GetLegacyAttributes());
+    }
+    return _popupAttr;
 }
