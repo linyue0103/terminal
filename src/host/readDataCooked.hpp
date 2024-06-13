@@ -39,7 +39,8 @@ public:
     til::point_span GetBoundaries() const noexcept;
 
 private:
-    static constexpr uint8_t CommandNumberMaxInputLength = 5;
+    static constexpr til::CoordType MaxPopupHeight = 10;
+    static constexpr size_t CommandNumberMaxInputLength = 5;
     static constexpr size_t npos = static_cast<size_t>(-1);
 
     enum class State : uint8_t
@@ -68,6 +69,9 @@ private:
         void MarkEverythingDirty() noexcept;
         void MarkAsClean() noexcept;
         void Suspend(bool suspended) noexcept;
+        
+        std::wstring_view GetTextBeforeCursor() const noexcept;
+        std::wstring_view GetTextAfterCursor() const noexcept;
 
         std::wstring_view GetUnmodifiedTextBeforeCursor() const noexcept;
         std::wstring_view GetUnmodifiedTextAfterCursor() const noexcept;
@@ -111,10 +115,6 @@ private:
     {
         PopupKind kind;
 
-        // The inner rectangle of the popup, excluding the border that we draw.
-        // In absolute TextBuffer coordinates.
-        til::rect contentRect;
-
         // Using a std::variant would be preferable in modern C++ but is practically equally annoying to use.
         union
         {
@@ -123,7 +123,7 @@ private:
             {
                 // Keep 1 char space for the trailing \0 char.
                 std::array<wchar_t, CommandNumberMaxInputLength + 1> buffer;
-                uint8_t bufferSize;
+                size_t bufferSize;
             } commandNumber;
 
             // Used by PopupKind::CommandList
@@ -140,6 +140,12 @@ private:
         };
     };
 
+    struct LayoutResult
+    {
+        size_t offset;
+        til::CoordType column;
+    };
+
     static size_t _wordPrev(const std::wstring_view& chars, size_t position);
     static size_t _wordNext(const std::wstring_view& chars, size_t position);
 
@@ -149,17 +155,12 @@ private:
     void _handlePostCharInputLoop(bool isUnicode, size_t& numBytes, ULONG& controlKeyState);
     void _transitionState(State state) noexcept;
     void _flushBuffer();
-    void _erase(ptrdiff_t distance) const;
-    ptrdiff_t _measureChars(const std::wstring_view& text, ptrdiff_t cursorOffset) const;
-    ptrdiff_t _writeChars(const std::wstring_view& text) const;
-    ptrdiff_t _writeCharsImpl(const std::wstring_view& text, bool measureOnly, ptrdiff_t cursorOffset) const;
-    ptrdiff_t _measureCharsUnprocessed(const std::wstring_view& text, ptrdiff_t cursorOffset) const;
-    ptrdiff_t _writeCharsUnprocessed(const std::wstring_view& text) const;
     til::point _offsetPosition(til::point pos, ptrdiff_t distance) const;
     void _offsetCursorPosition(ptrdiff_t distance) const;
     void _offsetCursorPositionAlways(ptrdiff_t distance) const;
     til::CoordType _getColumnAtRelativeCursorPosition(ptrdiff_t distance) const;
-    size_t _layoutLine(std::wstring& output, const std::wstring_view& input, size_t inputOffset, til::CoordType columnBegin, til::CoordType columnLimit) const;
+    void _formatHomeCursorPosition(std::wstring& output) const;
+    LayoutResult _layoutLine(std::wstring& output, const std::wstring_view& input, size_t inputOffset, til::CoordType columnBegin, til::CoordType columnLimit) const;
 
     void _popupPush(PopupKind kind);
     void _popupsDone();
@@ -182,12 +183,7 @@ private:
     std::unique_ptr<ConsoleHandleData> _tempHandle;
 
     BufferState _buffer;
-    // _distanceCursor is the distance between the start of the prompt and the
-    // current cursor location in columns (including wide glyph padding columns).
-    ptrdiff_t _distanceCursor = 0;
-    // _distanceEnd is the distance between the start of the prompt and its last
-    // glyph at the end in columns (including wide glyph padding columns).
-    ptrdiff_t _distanceEnd = 0;
+    til::point _promptStart;
     bool _insertMode = false;
     State _state = State::Accumulating;
 
