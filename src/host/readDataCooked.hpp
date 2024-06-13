@@ -143,7 +143,13 @@ private:
     struct LayoutResult
     {
         size_t offset;
-        til::CoordType column;
+        til::CoordType column = 0;
+    };
+
+    struct Line
+    {
+        std::wstring text;
+        til::CoordType columnEnd;
     };
 
     static size_t _wordPrev(const std::wstring_view& chars, size_t position);
@@ -159,7 +165,7 @@ private:
     void _offsetCursorPosition(ptrdiff_t distance) const;
     void _offsetCursorPositionAlways(ptrdiff_t distance) const;
     til::CoordType _getColumnAtRelativeCursorPosition(ptrdiff_t distance) const;
-    void _formatHomeCursorPosition(std::wstring& output) const;
+    void _appendCUP(til::point pos);
     LayoutResult _layoutLine(std::wstring& output, const std::wstring_view& input, size_t inputOffset, til::CoordType columnBegin, til::CoordType columnLimit) const;
 
     void _popupPush(PopupKind kind);
@@ -183,10 +189,13 @@ private:
     std::unique_ptr<ConsoleHandleData> _tempHandle;
 
     BufferState _buffer;
-    til::point _promptStart;
+    til::point _originInViewport;
+    til::CoordType _viewportTop = 0;
     bool _insertMode = false;
     State _state = State::Accumulating;
 
     std::vector<Popup> _popups;
     std::wstring _popupAttr;
+    
+    std::wstring _output;
 };
