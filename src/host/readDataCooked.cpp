@@ -845,11 +845,77 @@ void COOKED_READ_DATA::_flushBuffer()
     til::point cursorPosition{ columnBegin, 0 };
     std::vector<Line> lines;
 
+    // FYI: This loop does not loop. It exists because goto is considered evil
+    // and if MSVC says that then that must be true.
+    for (;;)
+    {
+        auto limit = cursorOffset;
+
+        // Layout the _buffer contents into lines.
+        for (size_t beg = 0; beg < text.size();)
+        {
+            std::wstring line;
+            auto res = _layoutLine(line, text.substr(0, limit), beg, columnBegin, size.width);
+
+            if (res.offset == cursorOffset)
+            {
+                cursorPosition = { res.column, gsl::narrow_cast<til::CoordType>(lines.size()) };
+                beg = res.offset;
+                columnBegin = res.column;
+                limit = text.size();
+                res = _layoutLine(line, text, beg, columnBegin, size.width);
+            }
+
+            lines.emplace_back(std::move(line), res.column);
+            beg = res.offset;
+            columnBegin = 0;
+        }
+
+        // If the cursor is at a delay-wrapped position, wrap it explicitly.
+        // This ensures that the cursor is always "after" the insertion position.
+        if (cursorPosition.x >= size.width)
+        {
+            cursorPosition.x = 0;
+            cursorPosition.y++;
+
+            // If the cursor is at the end of the buffer however, we have to insert
+            // a line because otherwise it won't have any space to be visible.
+            if (cursorOffset == text.size())
+            {
+                lines.emplace_back();
+            }
+        }
+
+        // Usually we'll be on a "prompt> ..." line and behave like a regular single-line-editor.
+        // But once the entire viewport is full of text, we need to behave more like a pager (= scrolling, etc.).
+        // This code retries the layout process with that in mind: The cursor starts at origin {0, 0}.
+        if (gsl::narrow_cast<til::CoordType>(lines.size()) > size.height && originInViewport.x != 0)
+        {
+            lines.clear();
+            _originInViewport.x = 0;
+            originInViewport = {};
+            columnBegin = 0;
+            continue;
+        }
+
+        break;
+    }
+
+    // Render the popups, if there are any.
     if (!_popups.empty())
     {
         auto& popup = _popups.back();
 
-        if (cursorPosition.x > 0)
+        // The popup should be right below the last line of text.
+        // That makes it look like it's "flush" with the other contents.
+        if (!lines.empty() && lines.back().columnEnd == 0)
+        {
+            lines.pop_back();
+        }
+
+        // But it should not be right on the line where the prompt starts.
+        // That would look goofy otherwise, since there's where the text is supposed to go.
+        if (lines.empty())
         {
             lines.emplace_back();
         }
@@ -857,65 +923,24 @@ void COOKED_READ_DATA::_flushBuffer()
         switch (popup.kind)
         {
         case PopupKind::CopyToChar:
-            _popupDrawPrompt(lines, ID_CONSOLE_MSGCMDLINEF2);
+            _popupDrawPrompt(lines, size, ID_CONSOLE_MSGCMDLINEF2, {});
             break;
         case PopupKind::CopyFromChar:
-            _popupDrawPrompt(lines, ID_CONSOLE_MSGCMDLINEF4);
+            _popupDrawPrompt(lines, size, ID_CONSOLE_MSGCMDLINEF4, {});
             break;
         case PopupKind::CommandNumber:
-            _popupDrawPrompt(lines, ID_CONSOLE_MSGCMDLINEF9);
+            _popupDrawPrompt(lines, size, ID_CONSOLE_MSGCMDLINEF9, { popup.commandNumber.buffer.data(), CommandNumberMaxInputLength });
             break;
         case PopupKind::CommandList:
-            _popupDrawCommandList(lines, popup);
+            _popupDrawCommandList(lines, size, popup);
             break;
         default:
             assert(false);
         }
-    }
-    else
-    {
-        for (;;)
-        {
-            auto limit = cursorOffset;
 
-            for (size_t beg = 0; beg < text.size();)
-            {
-                std::wstring line;
-                auto res = _layoutLine(line, text.substr(0, limit), beg, columnBegin, size.width);
-
-                if (res.offset == cursorOffset)
-                {
-                    cursorPosition = { res.column, gsl::narrow_cast<til::CoordType>(lines.size()) };
-                    beg = res.offset;
-                    columnBegin = res.column;
-                    limit = text.size();
-                    res = _layoutLine(line, text, beg, columnBegin, size.width);
-                }
-
-                lines.emplace_back(std::move(line), res.column);
-                beg = res.offset;
-                columnBegin = 0;
-            }
-
-            if (cursorPosition.x >= size.width)
-            {
-                lines.emplace_back(L" \r", 0);
-                cursorPosition.x = 0;
-                cursorPosition.y++;
-            }
-
-            if (gsl::narrow_cast<til::CoordType>(lines.size()) > size.height && originInViewport.x != 0)
-            {
-                _originInViewport.x = 0;
-                originInViewport = {};
-                columnBegin = 0;
-                lines.clear();
-                // Restart the layout process now that the initial columnBegin is 0.
-                continue;
-            }
-
-            break;
-        }
+        // Put the cursor at the end of the contents. This ensures we scroll the viewportTop.
+        cursorPosition.x = lines.back().columnEnd;
+        cursorPosition.y = gsl::narrow_cast<til::CoordType>(lines.size()) - 1;
     }
 
     const auto lineCount = gsl::narrow_cast<til::CoordType>(lines.size());
@@ -926,38 +951,52 @@ void COOKED_READ_DATA::_flushBuffer()
     // as the viewport fills itself with text the _originInViewport will slowly move towards 0.
     originInViewport.y = std::min(originInViewport.y, size.height - viewportHeight);
 
-    // The topmost line should not be greater than the number of lines minus the viewport height.
-    // Otherwise, when you backspace on the last line of the buffer, the contents wouldn't scroll up.
-    auto viewportTop = std::min(_viewportTop, lineCount - size.height);
+    auto viewportTop = _viewportTop;
+    // If the selection is above the viewport, we go up...
+    viewportTop = std::min(viewportTop, cursorPosition.y);
+    // and if the selection is below it, we go down.
+    viewportTop = std::max(viewportTop, cursorPosition.y - size.height + 1);
+    // The value may be out of bounds, because the above min/max doesn't ensure this on its own.
+    viewportTop = std::clamp(viewportTop, 0, lineCount - viewportHeight);
 
-    if (lineCount < size.height)
-    {
-        viewportTop = 0;
-    }
-    else if (cursorPosition.y < viewportTop)
-    {
-        viewportTop = cursorPosition.y;
-    }
-    else if (cursorPosition.y >= viewportTop + size.height)
-    {
-        viewportTop = cursorPosition.y - size.height + 1;
-    }
-
+    // Transform the cursorPosition from the lines vector coordinate space into VT screen space.
     cursorPosition.y += originInViewport.y;
     cursorPosition.y -= viewportTop;
 
     std::wstring output;
+
+    // Disable the cursor when opening a popup, reenable it when closing them.
+    if (const auto popupOpened = !_popups.empty(); _popupOpened != popupOpened)
+    {
+        wchar_t seq[] = L"\x1b[?25l";
+        seq[5] = popupOpened ? 'l' : 'h';
+        output.append(&seq[0], 6);
+        _popupOpened = popupOpened;
+    }
+
+    // Restore the cursor position where we previously stopped writing text.
     _appendCUP(output, _originInViewport);
 
+    // Accumulate all affected lines in a single string.
     for (til::CoordType i = 0; i < viewportHeight; i++)
     {
         const auto& line = lines.at(i + viewportTop);
 
         output.append(line.text);
 
-        if (line.columnEnd < size.width)
+        if (const auto remaining = size.width - line.columnEnd; remaining > 0)
         {
-            output.append(csi("K"));
+            if (remaining <= 8)
+            {
+                output.append(remaining, L' ');
+            }
+            else
+            {
+                output.append(csi("K"));
+            }
+
+            // Since the line ended in the middle of the viewport and because
+            // we have lines after this one, we need to insert a line break.
             if ((i + 1) < viewportHeight)
             {
                 output.append(L"\r\n");
@@ -965,6 +1004,7 @@ void COOKED_READ_DATA::_flushBuffer()
         }
     }
 
+    // Clear any lines that we previously filled and are now empty.
     for (til::CoordType i = viewportHeight; i < _viewportHeight; i++)
     {
         if (i != 0)
@@ -983,81 +1023,15 @@ void COOKED_READ_DATA::_flushBuffer()
     _dirty = false;
 }
 
-// Moves the given point by the given distance inside the text buffer, as if moving a cursor with the left/right arrow keys.
-til::point COOKED_READ_DATA::_offsetPosition(til::point pos, ptrdiff_t distance) const
-{
-    if (distance == 0)
-    {
-        return pos;
-    }
-
-    const auto size = _screenInfo.GetTextBufferAcceptable().GetSize().Dimensions();
-    const auto w = static_cast<ptrdiff_t>(size.width);
-    const auto h = static_cast<ptrdiff_t>(size.height);
-    const auto area = w * h;
-
-    auto off = w * pos.y + pos.x;
-    off += distance;
-    off = off < 0 ? 0 : (off > area ? area : off);
-
-    return {
-        gsl::narrow_cast<til::CoordType>(off % w),
-        gsl::narrow_cast<til::CoordType>(off / w),
-    };
-}
-
-// See _offsetCursorPositionAlways(). This wrapper is just here to avoid doing
-// expensive cursor movements when there's nothing to move. A no-op wrapper.
-void COOKED_READ_DATA::_offsetCursorPosition(ptrdiff_t distance) const
-{
-    if (distance != 0)
-    {
-        _offsetCursorPositionAlways(distance);
-    }
-}
-
-// This moves the cursor `distance`-many cells around in the buffer.
-// It's intended to be used in combination with _writeChars.
-// Usually you should use _offsetCursorPosition() to no-op distance==0.
-void COOKED_READ_DATA::_offsetCursorPositionAlways(ptrdiff_t distance) const
+COOKED_READ_DATA::LayoutResult COOKED_READ_DATA::_layoutLine(std::wstring& output, const std::wstring_view& input, const size_t inputOffset, const til::CoordType columnBegin, const til::CoordType columnLimit) const
 {
     const auto& textBuffer = _screenInfo.GetTextBufferAcceptable();
-    const auto& cursor = textBuffer.GetCursor();
-    const auto pos = _offsetPosition(cursor.GetPosition(), distance);
-
-    std::ignore = _screenInfo.SetCursorPosition(pos, true);
-    _screenInfo.MakeCursorVisible(pos);
-}
-
-til::CoordType COOKED_READ_DATA::_getColumnAtRelativeCursorPosition(ptrdiff_t distance) const
-{
-    const auto& textBuffer = _screenInfo.GetTextBufferAcceptable();
-    const auto size = textBuffer.GetSize().Dimensions();
-    const auto& cursor = textBuffer.GetCursor();
-    const auto pos = cursor.GetPosition();
-
-    auto x = gsl::narrow_cast<til::CoordType>((pos.x + distance) % size.width);
-    if (x < 0)
-    {
-        x += size.width;
-    }
-
-    return x;
-}
-
-void COOKED_READ_DATA::_appendCUP(std::wstring& output, til::point pos)
-{
-    fmt::format_to(std::back_inserter(output), FMT_COMPILE(L"\x1b[{};{}H"), pos.y + 1, pos.x + 1);
-}
-
-COOKED_READ_DATA::LayoutResult COOKED_READ_DATA::_layoutLine(std::wstring& output, const std::wstring_view& input, size_t inputOffset, til::CoordType columnBegin, til::CoordType columnLimit) const
-{
-    const auto& textBuffer = _screenInfo.GetTextBufferAcceptable();
-
     const auto beg = input.data();
     const auto end = beg + input.size();
     auto it = beg + std::min(inputOffset, input.size());
-    auto column = columnBegin;
+    auto column = std::min(columnBegin, columnLimit);
+
+    output.reserve(output.size() + columnLimit - column);
 
     while (it != end)
     {
@@ -1072,11 +1046,7 @@ COOKED_READ_DATA::LayoutResult COOKED_READ_DATA::_layoutLine(std::wstring& outpu
             column += cols;
             it += len;
 
-            if (len < text.size())
-            {
-                break;
-            }
-            if (it == end)
+            if (len < text.size() || it == end)
             {
                 break;
             }
@@ -1120,6 +1090,16 @@ COOKED_READ_DATA::LayoutResult COOKED_READ_DATA::_layoutLine(std::wstring& outpu
     };
 }
 
+void COOKED_READ_DATA::_appendCUP(std::wstring& output, til::point pos)
+{
+    fmt::format_to(std::back_inserter(output), FMT_COMPILE(L"\x1b[{};{}H"), pos.y + 1, pos.x + 1);
+}
+
+void COOKED_READ_DATA::_appendPopupAttr(std::wstring& output) const
+{
+    VtIo::FormatAttributes(output, _screenInfo.GetPopupAttributes().GetLegacyAttributes());
+}
+
 void COOKED_READ_DATA::_popupPush(const PopupKind kind)
 try
 {
@@ -1133,8 +1113,9 @@ try
         popup.commandNumber.bufferSize = 0;
         break;
     case PopupKind::CommandList:
+        popup.commandList.top = -1;
+        popup.commandList.height = 10;
         popup.commandList.selected = _history->LastDisplayed;
-        popup.commandList.top = popup.commandList.selected - std::min(_history->GetNumberOfCommands(), MaxPopupHeight) / 2;
         break;
     default:
         break;
@@ -1346,11 +1327,11 @@ void COOKED_READ_DATA::_popupHandleCommandListInput(Popup& popup, const wchar_t 
         break;
     case VK_PRIOR:
         // _popupDrawCommandList() clamps all values to valid ranges in `cl`.
-        cl.selected -= MaxPopupHeight;
+        cl.selected -= cl.height;
         break;
     case VK_NEXT:
         // _popupDrawCommandList() clamps all values to valid ranges in `cl`.
-        cl.selected += MaxPopupHeight;
+        cl.selected += cl.height;
         break;
     default:
         return;
@@ -1359,62 +1340,82 @@ void COOKED_READ_DATA::_popupHandleCommandListInput(Popup& popup, const wchar_t 
     _dirty = true;
 }
 
-void COOKED_READ_DATA::_popupDrawPrompt(std::vector<Line>& lines, const UINT id)
+void COOKED_READ_DATA::_popupDrawPrompt(std::vector<Line>& lines, const til::size size, const UINT id, const std::wstring_view suffix)
 {
-    lines.emplace_back(_LoadString(id), 0);
+    auto str = _LoadString(id);
+    str.append(suffix);
+
+    std::wstring line;
+    _appendPopupAttr(line);
+    const auto res = _layoutLine(line, str, 0, 0, size.width);
+    line.append(csi("m"));
+
+    lines.emplace_back(std::move(line), res.column);
 }
 
-void COOKED_READ_DATA::_popupDrawCommandList(std::vector<Line>& lines, Popup& popup)
+void COOKED_READ_DATA::_popupDrawCommandList(std::vector<Line>& lines, const til::size size, Popup& popup)
 {
     assert(popup.kind == PopupKind::CommandList);
 
     auto& cl = popup.commandList;
     const auto historySize = _history->GetNumberOfCommands();
-    const auto& textBuffer = _screenInfo.GetTextBufferAcceptable();
-    const auto& popupAttr = _getPopupAttr();
-    const auto prefixWidth = gsl::narrow_cast<til::CoordType>(fmt::formatted_size(FMT_COMPILE(L"  {}: "), historySize));
-    const auto width = textBuffer.GetSize().Width();
-    const auto height = std::min(historySize, MaxPopupHeight);
+    const auto indexWidth = gsl::narrow_cast<til::CoordType>(fmt::formatted_size(FMT_COMPILE(L"{}"), historySize));
 
+    // The popup is half the height of the viewport, but at least 1 and at most 20 lines.
+    // Unless of course the history size is less than that.
+    const auto height = std::min(historySize, std::clamp(size.height / 2, 1, 20));
+
+    // cl.selected may be out of bounds after a page up/down, etc., so we need to clamp it.
+    cl.selected = std::clamp(cl.selected, 0, historySize - 1);
+
+    // If it hasn't been initialized it yet, center the selected item.
+    if (cl.top < 0)
     {
-        // The viewport movement of the popup is anchored around the current selection first and foremost.
-        cl.selected = std::clamp(cl.selected, 0, historySize - 1);
-
-        // It then lazily follows it when the selection goes out of the viewport.
-        if (cl.selected < cl.top)
-        {
-            cl.top = cl.selected;
-        }
-        else if (cl.selected >= cl.top + height)
-        {
-            cl.top = cl.selected - height + 1;
-        }
-
-        cl.top = std::clamp(cl.top, 0, historySize - height);
+        cl.top = std::max(0, cl.selected - height / 2);
     }
+
+    // If the selection is above the viewport, we go up...
+    cl.top = std::min(cl.top, cl.selected);
+    // and if the selection is below it, we go down.
+    cl.top = std::max(cl.top, cl.selected - height + 1);
+    // The value may be out of bounds, because the above min/max doesn't ensure this on its own.
+    cl.top = std::clamp(cl.top, 0, historySize - height);
+
+    // We also need to update the height for future page up/down movements.
+    cl.height = height;
+
+    // Calculate the position of the █ track in the scrollbar among all the ▒.
+    // The position is offset by +1 because at off == 0 we draw the ▲.
+    // We add historyMax/2 to round the division result to the nearest value.
+    const auto historyMax = historySize - 1;
+    const auto trackPositionMax = height - 3;
+    const auto trackPosition = 1 + (trackPositionMax * cl.selected + historyMax / 2) / historyMax;
 
     for (til::CoordType off = 0; off < height; ++off)
     {
-        const auto historyIndex = cl.top + off;
-        const auto str = _history->GetNth(historyIndex);
-        const auto selected = off == cl.selected;
+        const auto index = cl.top + off;
+        const auto str = _history->GetNth(index);
+        const auto selected = index == cl.selected;
+
         std::wstring line;
+        _appendPopupAttr(line);
 
-        line.append(popupAttr);
-
-        wchar_t scrollbarChar = L'▒';
-        if (historySize > MaxPopupHeight)
+        wchar_t scrollbarChar = L' ';
+        if (historySize > height)
         {
             if (off == 0)
             {
                 scrollbarChar = L'▲';
             }
-            else if (off == historySize - 1)
+            else if (off == height - 1)
             {
                 scrollbarChar = L'▼';
             }
+            else
+            {
+                scrollbarChar = off == trackPosition ? L'█' : L'▒';
+            }
         }
-
         line.push_back(scrollbarChar);
 
         if (selected)
@@ -1426,12 +1427,13 @@ void COOKED_READ_DATA::_popupDrawCommandList(std::vector<Line>& lines, Popup& po
             line.append(csi("m") " ");
         }
 
-        fmt::format_to(std::back_inserter(line), FMT_COMPILE("{}: "), historyIndex);
+        fmt::format_to(std::back_inserter(line), FMT_COMPILE("{:{}}: "), index, indexWidth);
 
-        const auto res = _layoutLine(line, str, 0, prefixWidth, width - 1);
+        auto res = _layoutLine(line, str, 0, indexWidth + 4, size.width - 1);
         if (res.offset < str.size())
         {
             line.push_back(L'…');
+            res.column++;
         }
 
         if (selected)
@@ -1441,13 +1443,4 @@ void COOKED_READ_DATA::_popupDrawCommandList(std::vector<Line>& lines, Popup& po
 
         lines.emplace_back(std::move(line), res.column);
     }
-}
-
-const std::wstring& COOKED_READ_DATA::_getPopupAttr()
-{
-    if (_popupAttr.empty())
-    {
-        VtIo::FormatAttributes(_popupAttr, _screenInfo.GetPopupAttributes().GetLegacyAttributes());
-    }
-    return _popupAttr;
 }

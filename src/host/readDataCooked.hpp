@@ -39,7 +39,6 @@ public:
     til::point_span GetBoundaries() const noexcept;
 
 private:
-    static constexpr til::CoordType MaxPopupHeight = 10;
     static constexpr size_t CommandNumberMaxInputLength = 5;
     static constexpr size_t npos = static_cast<size_t>(-1);
 
@@ -129,7 +128,10 @@ private:
             // Used by PopupKind::CommandList
             struct
             {
+                // The previous height of the popup.
+                til::CoordType height;
                 // Command history index of the first row we draw in the popup.
+                // A value of -1 means it hasn't been initialized yet.
                 CommandHistory::Index top;
                 // Command history index of the currently selected row.
                 CommandHistory::Index selected;
@@ -146,6 +148,7 @@ private:
     struct Line
     {
         std::wstring text;
+        // This value is meant exclusive. That is, writing 3 chars at column 0 will return columnEnd=3.
         til::CoordType columnEnd;
     };
 
@@ -158,12 +161,9 @@ private:
     void _handlePostCharInputLoop(bool isUnicode, size_t& numBytes, ULONG& controlKeyState);
     void _transitionState(State state) noexcept;
     void _flushBuffer();
-    til::point _offsetPosition(til::point pos, ptrdiff_t distance) const;
-    void _offsetCursorPosition(ptrdiff_t distance) const;
-    void _offsetCursorPositionAlways(ptrdiff_t distance) const;
-    til::CoordType _getColumnAtRelativeCursorPosition(ptrdiff_t distance) const;
-    static void _appendCUP(std::wstring& output, til::point pos);
     LayoutResult _layoutLine(std::wstring& output, const std::wstring_view& input, size_t inputOffset, til::CoordType columnBegin, til::CoordType columnLimit) const;
+    static void _appendCUP(std::wstring& output, til::point pos);
+    void _appendPopupAttr(std::wstring& output) const;
 
     void _popupPush(PopupKind kind);
     void _popupsDone();
@@ -172,9 +172,8 @@ private:
     void _popupHandleCommandNumberInput(Popup& popup, wchar_t wch, uint16_t vkey, DWORD modifiers);
     void _popupHandleCommandListInput(Popup& popup, wchar_t wch, uint16_t vkey, DWORD modifiers);
     void _popupHandleInput(wchar_t wch, uint16_t vkey, DWORD keyState);
-    static void _popupDrawPrompt(std::vector<Line>& lines, UINT id);
-    void _popupDrawCommandList(std::vector<Line>& lines, Popup& popup);
-    const std::wstring& _getPopupAttr();
+    void _popupDrawPrompt(std::vector<Line>& lines, til::size size, UINT id, std::wstring_view suffix);
+    void _popupDrawCommandList(std::vector<Line>& lines, til::size size, Popup& popup);
 
     SCREEN_INFORMATION& _screenInfo;
     std::span<char> _userBuffer;
@@ -195,4 +194,5 @@ private:
 
     std::vector<Popup> _popups;
     std::wstring _popupAttr;
+    bool _popupOpened = false;
 };
