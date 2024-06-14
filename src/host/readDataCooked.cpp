@@ -71,13 +71,8 @@ void COOKED_READ_DATA::BufferState::MarkAsClean() noexcept
     _dirtyBeg = npos;
 }
 
-void COOKED_READ_DATA::BufferState::Suspend(bool suspended) noexcept
+void COOKED_READ_DATA::BufferState::Suspend(bool) noexcept
 {
-    if (_suspended != suspended)
-    {
-        _suspended = suspended;
-        MarkEverythingDirty();
-    }
 }
 
 std::wstring_view COOKED_READ_DATA::BufferState::GetTextBeforeCursor() const noexcept
@@ -334,18 +329,18 @@ bool COOKED_READ_DATA::Read(const bool isUnicode, size_t& numBytes, ULONG& contr
 // Printing wide glyphs at the end of a row results in a forced line wrap and a padding whitespace to be inserted.
 // When the text buffer resizes these padding spaces may vanish and the _distanceCursor and _distanceEnd measurements become inaccurate.
 // To fix this, this function is called before a resize and will clear the input line. Afterwards, RedrawAfterResize() will restore it.
-void COOKED_READ_DATA::EraseBeforeResize()
+void COOKED_READ_DATA::EraseBeforeResize() const
 {
-    _output.clear();
-    _appendCUP(_originInViewport);
-    _output.append(csi("J"));
-    WriteCharsVT(_screenInfo, _output);
+    std::wstring output;
+    _appendCUP(output, _originInViewport);
+    output.append(csi("J"));
+    WriteCharsVT(_screenInfo, output);
 }
 
 // The counter-part to EraseBeforeResize().
 void COOKED_READ_DATA::RedrawAfterResize()
 {
-    _buffer.MarkEverythingDirty();
+    _dirty = true;
     _flushBuffer();
 }
 
@@ -478,9 +473,10 @@ void COOKED_READ_DATA::_handleChar(wchar_t wch, const DWORD modifiers)
         // That's why we flush the contents before the insertion and then ensure that the _flushBuffer() call in Read() exits early.
         const auto cursor = _buffer.GetCursorPosition();
         _buffer.Replace(cursor, npos, nullptr, 0);
+        _dirty = true;
         _flushBuffer();
         _buffer.Replace(cursor, 0, &wch, 1);
-        _buffer.MarkAsClean();
+        _dirty = false;
 
         _controlKeyState = modifiers;
         _transitionState(State::DoneWithWakeupMask);
@@ -833,121 +829,158 @@ void COOKED_READ_DATA::_transitionState(State state) noexcept
 // NOTE: Don't call _flushBuffer() after appending newlines to the buffer! See _handlePostCharInputLoop for more information.
 void COOKED_READ_DATA::_flushBuffer()
 {
-    if (_buffer.IsClean() || WI_IsFlagClear(_pInputBuffer->InputMode, ENABLE_ECHO_INPUT))
+    _dirty |= !_buffer.IsClean();
+    _buffer.MarkAsClean();
+
+    if (!_dirty || WI_IsFlagClear(_pInputBuffer->InputMode, ENABLE_ECHO_INPUT))
     {
         return;
     }
 
     const auto size = _screenInfo.GetVirtualViewport().Dimensions();
-    //const auto textBeforeCursor = _buffer.GetTextBeforeCursor();
-    //const auto textAfterCursor = _buffer.GetTextAfterCursor();
     const auto cursorOffset = _buffer.GetCursorPosition();
     const std::wstring_view text{ _buffer.Get() };
-    auto originInViewportNext = _originInViewport;
+    auto originInViewport = _originInViewport;
     auto columnBegin = _originInViewport.x;
     til::point cursorPosition{ columnBegin, 0 };
     std::vector<Line> lines;
 
-    for (;;)
+    if (!_popups.empty())
     {
-        auto limit = cursorOffset;
+        auto& popup = _popups.back();
 
-        for (size_t beg = 0; beg < text.size();)
+        if (cursorPosition.x > 0)
         {
-            std::wstring line;
-            auto res = _layoutLine(line, text.substr(0, limit), beg, columnBegin, size.width);
+            lines.emplace_back();
+        }
 
-            if (res.offset == cursorOffset)
+        switch (popup.kind)
+        {
+        case PopupKind::CopyToChar:
+            _popupDrawPrompt(lines, ID_CONSOLE_MSGCMDLINEF2);
+            break;
+        case PopupKind::CopyFromChar:
+            _popupDrawPrompt(lines, ID_CONSOLE_MSGCMDLINEF4);
+            break;
+        case PopupKind::CommandNumber:
+            _popupDrawPrompt(lines, ID_CONSOLE_MSGCMDLINEF9);
+            break;
+        case PopupKind::CommandList:
+            _popupDrawCommandList(lines, popup);
+            break;
+        default:
+            assert(false);
+        }
+    }
+    else
+    {
+        for (;;)
+        {
+            auto limit = cursorOffset;
+
+            for (size_t beg = 0; beg < text.size();)
             {
-                cursorPosition = { res.column, gsl::narrow_cast<til::CoordType>(lines.size()) };
+                std::wstring line;
+                auto res = _layoutLine(line, text.substr(0, limit), beg, columnBegin, size.width);
+
+                if (res.offset == cursorOffset)
+                {
+                    cursorPosition = { res.column, gsl::narrow_cast<til::CoordType>(lines.size()) };
+                    beg = res.offset;
+                    columnBegin = res.column;
+                    limit = text.size();
+                    res = _layoutLine(line, text, beg, columnBegin, size.width);
+                }
+
+                lines.emplace_back(std::move(line), res.column);
                 beg = res.offset;
-                columnBegin = res.column;
-                limit = text.size();
-                res = _layoutLine(line, text, beg, columnBegin, size.width);
+                columnBegin = 0;
             }
 
-            lines.emplace_back(std::move(line), res.column);
-            beg = res.offset;
-            columnBegin = 0;
-        }
+            if (cursorPosition.x >= size.width)
+            {
+                lines.emplace_back(L" \r", 0);
+                cursorPosition.x = 0;
+                cursorPosition.y++;
+            }
 
-        if (cursorPosition.x >= size.width)
-        {
-            lines.emplace_back(L" \r", 0);
-            cursorPosition.x = 0;
-            cursorPosition.y++;
-        }
+            if (gsl::narrow_cast<til::CoordType>(lines.size()) > size.height && originInViewport.x != 0)
+            {
+                _originInViewport.x = 0;
+                originInViewport = {};
+                columnBegin = 0;
+                lines.clear();
+                // Restart the layout process now that the initial columnBegin is 0.
+                continue;
+            }
 
-        if (gsl::narrow_cast<til::CoordType>(lines.size()) > size.height && originInViewportNext.x != 0)
-        {
-            _originInViewport.x = 0;
-            originInViewportNext = {};
-            columnBegin = 0;
-            lines.clear();
-            // Restart the layout process now that the initial columnBegin is 0.
-            continue;
+            break;
         }
-
-        break;
     }
 
     const auto lineCount = gsl::narrow_cast<til::CoordType>(lines.size());
-    const auto height = std::min(lineCount, size.height);
+    const auto viewportHeight = std::min(lineCount, size.height);
 
     // If the contents of the prompt are longer than the remaining number of lines in the viewport,
     // we need to reduce originInViewportNext.y towards 0 to account for that. In other words,
     // as the viewport fills itself with text the _originInViewport will slowly move towards 0.
-    originInViewportNext.y = std::min(originInViewportNext.y, size.height - height);
+    originInViewport.y = std::min(originInViewport.y, size.height - viewportHeight);
 
     // The topmost line should not be greater than the number of lines minus the viewport height.
     // Otherwise, when you backspace on the last line of the buffer, the contents wouldn't scroll up.
-    _viewportTop = std::min(_viewportTop, lineCount - size.height);
+    auto viewportTop = std::min(_viewportTop, lineCount - size.height);
 
     if (lineCount < size.height)
     {
-        _viewportTop = 0;
+        viewportTop = 0;
     }
-    else if (cursorPosition.y < _viewportTop)
+    else if (cursorPosition.y < viewportTop)
     {
-        _viewportTop = cursorPosition.y;
+        viewportTop = cursorPosition.y;
     }
-    else if (cursorPosition.y >= _viewportTop + size.height)
+    else if (cursorPosition.y >= viewportTop + size.height)
     {
-        _viewportTop = cursorPosition.y - size.height + 1;
+        viewportTop = cursorPosition.y - size.height + 1;
     }
-    cursorPosition.y += originInViewportNext.y;
-    cursorPosition.y -= _viewportTop;
 
-    _output.clear();
-    _appendCUP(_originInViewport);
+    cursorPosition.y += originInViewport.y;
+    cursorPosition.y -= viewportTop;
 
-    for (til::CoordType i = 0; i < height; i++)
+    std::wstring output;
+    _appendCUP(output, _originInViewport);
+
+    for (til::CoordType i = 0; i < viewportHeight; i++)
     {
-        auto row = i + _viewportTop;
-        if (row < lines.size())
+        const auto& line = lines.at(i + viewportTop);
+
+        output.append(line.text);
+
+        if (line.columnEnd < size.width)
         {
-            const auto& line = lines[row];
-            _output.append(line.text);
-            if (line.columnEnd < size.width)
+            output.append(csi("K"));
+            if ((i + 1) < viewportHeight)
             {
-                _output.append(csi("K"));
+                output.append(L"\r\n");
             }
         }
-        else
-        {
-            if (i != 0)
-            {
-                _output.append(csi("E"));
-            }
-            _output.append(csi("K"));
-        }
     }
 
-    _appendCUP(cursorPosition);
-    WriteCharsVT(_screenInfo, _output);
+    for (til::CoordType i = viewportHeight; i < _viewportHeight; i++)
+    {
+        if (i != 0)
+        {
+            output.append(csi("E"));
+        }
+        output.append(csi("K"));
+    }
 
-    _buffer.MarkAsClean();
-    _originInViewport = originInViewportNext;
+    _appendCUP(output, cursorPosition);
+    WriteCharsVT(_screenInfo, output);
+
+    _originInViewport = originInViewport;
+    _viewportTop = viewportTop;
+    _viewportHeight = viewportHeight;
+    _dirty = false;
 }
 
 // Moves the given point by the given distance inside the text buffer, as if moving a cursor with the left/right arrow keys.
@@ -1012,9 +1045,9 @@ til::CoordType COOKED_READ_DATA::_getColumnAtRelativeCursorPosition(ptrdiff_t di
     return x;
 }
 
-void COOKED_READ_DATA::_appendCUP(til::point pos)
+void COOKED_READ_DATA::_appendCUP(std::wstring& output, til::point pos)
 {
-    fmt::format_to(std::back_inserter(_output), FMT_COMPILE(L"\x1b[{};{}H"), pos.y + 1, pos.x + 1);
+    fmt::format_to(std::back_inserter(output), FMT_COMPILE(L"\x1b[{};{}H"), pos.y + 1, pos.x + 1);
 }
 
 COOKED_READ_DATA::LayoutResult COOKED_READ_DATA::_layoutLine(std::wstring& output, const std::wstring_view& input, size_t inputOffset, til::CoordType columnBegin, til::CoordType columnLimit) const
@@ -1087,53 +1120,29 @@ COOKED_READ_DATA::LayoutResult COOKED_READ_DATA::_layoutLine(std::wstring& outpu
     };
 }
 
-// If the viewport is large enough to fit a popup, this function prepares everything for
-// showing the given type. It handles computing the size of the popup, its position,
-// backs the affected area up and draws the border and initial contents.
 void COOKED_READ_DATA::_popupPush(const PopupKind kind)
 try
 {
     auto& popup = _popups.emplace_back(kind);
-
-    if (_popups.size() == 1)
-    {
-        // Create a backup of the TextBuffer parts we're scribbling over.
-        // We need to flush the buffer to ensure we capture the latest contents.
-        // NOTE: This may theoretically modify popup.backupRect (practically unlikely).
-        _buffer.Suspend(true);
-        _flushBuffer();
-
-        // Save cursor position, clear to end, hide cursor.
-        WriteCharsVT(_screenInfo, esc("7") csi("J") csi("?25l"));
-    }
+    _dirty = true;
 
     switch (kind)
     {
-    case PopupKind::CopyToChar:
-        _popupDrawPrompt(popup, ID_CONSOLE_MSGCMDLINEF2);
-        break;
-    case PopupKind::CopyFromChar:
-        _popupDrawPrompt(popup, ID_CONSOLE_MSGCMDLINEF4);
-        break;
     case PopupKind::CommandNumber:
         popup.commandNumber.buffer.fill(' ');
         popup.commandNumber.bufferSize = 0;
-        _popupDrawPrompt(popup, ID_CONSOLE_MSGCMDLINEF9);
         break;
     case PopupKind::CommandList:
         popup.commandList.selected = _history->LastDisplayed;
         popup.commandList.top = popup.commandList.selected - std::min(_history->GetNumberOfCommands(), MaxPopupHeight) / 2;
-        _popupDrawCommandList(popup);
         break;
     default:
-        assert(false);
+        break;
     }
 }
 catch (...)
 {
     LOG_CAUGHT_EXCEPTION();
-    // Using _popupsDone() is a convenient way to restore the buffer contents if anything in this call failed.
-    // This could technically dismiss an unrelated popup that was already in _popups, but reaching this point is unlikely anyways.
     _popupsDone();
 }
 
@@ -1142,11 +1151,8 @@ catch (...)
 // Pressing F7 followed by F9 (CommandNumber on top of CommandList).
 void COOKED_READ_DATA::_popupsDone()
 {
-    // Restore cursor position, Clear to end of screen, show cursor.
-    WriteCharsVT(_screenInfo, esc("8") csi("J") csi("?25h"));
     _popups.clear();
-    _buffer.Suspend(false);
-    _flushBuffer();
+    _dirty = true;
 }
 
 void COOKED_READ_DATA::_popupHandleInput(wchar_t wch, uint16_t vkey, DWORD modifiers)
@@ -1185,6 +1191,10 @@ void COOKED_READ_DATA::_popupHandleCopyToCharInput(Popup& /*popup*/, const wchar
         {
             _popupsDone();
         }
+        else
+        {
+            return;
+        }
     }
     else
     {
@@ -1204,6 +1214,8 @@ void COOKED_READ_DATA::_popupHandleCopyToCharInput(Popup& /*popup*/, const wchar
 
         _popupsDone();
     }
+
+    _dirty = true;
 }
 
 void COOKED_READ_DATA::_popupHandleCopyFromCharInput(Popup& /*popup*/, const wchar_t wch, const uint16_t vkey, const DWORD /*modifiers*/)
@@ -1213,6 +1225,10 @@ void COOKED_READ_DATA::_popupHandleCopyFromCharInput(Popup& /*popup*/, const wch
         if (vkey == VK_ESCAPE)
         {
             _popupsDone();
+        }
+        else
+        {
+            return;
         }
     }
     else
@@ -1224,6 +1240,8 @@ void COOKED_READ_DATA::_popupHandleCopyFromCharInput(Popup& /*popup*/, const wch
         _buffer.Replace(cursor, idx - cursor, nullptr, 0);
         _popupsDone();
     }
+
+    _dirty = true;
 }
 
 void COOKED_READ_DATA::_popupHandleCommandNumberInput(Popup& popup, const wchar_t wch, const uint16_t vkey, const DWORD /*modifiers*/)
@@ -1234,6 +1252,10 @@ void COOKED_READ_DATA::_popupHandleCommandNumberInput(Popup& popup, const wchar_
         {
             _popupsDone();
         }
+        else
+        {
+            return;
+        }
     }
     else
     {
@@ -1242,34 +1264,28 @@ void COOKED_READ_DATA::_popupHandleCommandNumberInput(Popup& popup, const wchar_
             popup.commandNumber.buffer[popup.commandNumber.bufferSize++] = L'\0';
             _buffer.Replace(_history->RetrieveNth(std::stoi(popup.commandNumber.buffer.data())));
             _popupsDone();
-            return;
         }
-
-        std::wstring buffer;
-
-        if (wch >= L'0' && wch <= L'9')
+        else if (wch >= L'0' && wch <= L'9')
         {
             if (popup.commandNumber.bufferSize < CommandNumberMaxInputLength)
             {
                 popup.commandNumber.buffer[popup.commandNumber.bufferSize++] = wch;
-                buffer.push_back(wch);
             }
         }
         else if (wch == UNICODE_BACKSPACE)
         {
             if (popup.commandNumber.bufferSize > 0)
             {
-                popup.commandNumber.bufferSize--;
-                buffer.push_back(L'\b');
+                popup.commandNumber.buffer[--popup.commandNumber.bufferSize] = L' ';
             }
         }
         else
         {
             return;
         }
-
-        WriteCharsVT(_screenInfo, buffer);
     }
+
+    _dirty = true;
 }
 
 void COOKED_READ_DATA::_popupHandleCommandListInput(Popup& popup, const wchar_t wch, const uint16_t vkey, const DWORD modifiers)
@@ -1340,21 +1356,15 @@ void COOKED_READ_DATA::_popupHandleCommandListInput(Popup& popup, const wchar_t 
         return;
     }
 
-    _popupDrawCommandList(popup);
+    _dirty = true;
 }
 
-void COOKED_READ_DATA::_popupDrawPrompt(const Popup& popup, const UINT id)
+void COOKED_READ_DATA::_popupDrawPrompt(std::vector<Line>& lines, const UINT id)
 {
-    const auto text = _LoadString(id);
-    const auto& popupAttr = _getPopupAttr();
-    std::wstring buffer;
-    buffer.append(popupAttr);
-    buffer.append(text);
-    buffer.append(csi("m"));
-    WriteCharsVT(_screenInfo, buffer);
+    lines.emplace_back(_LoadString(id), 0);
 }
 
-void COOKED_READ_DATA::_popupDrawCommandList(Popup& popup)
+void COOKED_READ_DATA::_popupDrawCommandList(std::vector<Line>& lines, Popup& popup)
 {
     assert(popup.kind == PopupKind::CommandList);
 
@@ -1365,7 +1375,6 @@ void COOKED_READ_DATA::_popupDrawCommandList(Popup& popup)
     const auto prefixWidth = gsl::narrow_cast<til::CoordType>(fmt::formatted_size(FMT_COMPILE(L"  {}: "), historySize));
     const auto width = textBuffer.GetSize().Width();
     const auto height = std::min(historySize, MaxPopupHeight);
-    const auto dirtyHeight = std::max(height, cl.dirtyHeight);
 
     {
         // The viewport movement of the popup is anchored around the current selection first and foremost.
@@ -1384,31 +1393,17 @@ void COOKED_READ_DATA::_popupDrawCommandList(Popup& popup)
         cl.top = std::clamp(cl.top, 0, historySize - height);
     }
 
-    _appendCUP(_originInViewport);
-    _output.append(csi("J"));
-
-    for (til::CoordType off = 0; off < dirtyHeight; ++off)
+    for (til::CoordType off = 0; off < height; ++off)
     {
         const auto historyIndex = cl.top + off;
         const auto str = _history->GetNth(historyIndex);
         const auto selected = off == cl.selected;
+        std::wstring line;
 
-        _output.append(L"\r\n");
+        line.append(popupAttr);
 
-        if (str.empty())
-        {
-            _output.append(csi("K"));
-            continue;
-        }
-
-        _output.append(popupAttr);
-
-        wchar_t scrollbarChar = L' ';
-        if (selected)
-        {
-            scrollbarChar = L'▸';
-        }
-        else if (historySize > MaxPopupHeight)
+        wchar_t scrollbarChar = L'▒';
+        if (historySize > MaxPopupHeight)
         {
             if (off == 0)
             {
@@ -1420,29 +1415,32 @@ void COOKED_READ_DATA::_popupDrawCommandList(Popup& popup)
             }
         }
 
-        _output.push_back(scrollbarChar);
+        line.push_back(scrollbarChar);
 
-        if (!selected)
+        if (selected)
         {
-            _output.append(csi("m"));
+            line.push_back(L'▸');
+        }
+        else
+        {
+            line.append(csi("m") " ");
         }
 
-        fmt::format_to(std::back_inserter(_output), FMT_COMPILE(" {}: "), historyIndex);
+        fmt::format_to(std::back_inserter(line), FMT_COMPILE("{}: "), historyIndex);
 
-        if (_layoutLine(_output, str, 0, prefixWidth, width - 1).offset < str.size())
+        const auto res = _layoutLine(line, str, 0, prefixWidth, width - 1);
+        if (res.offset < str.size())
         {
-            _output.push_back(L'…');
+            line.push_back(L'…');
         }
 
         if (selected)
         {
-            _output.append(csi("m"));
+            line.append(csi("m"));
         }
+
+        lines.emplace_back(std::move(line), res.column);
     }
-
-    cl.dirtyHeight = height;
-
-    WriteCharsVT(_screenInfo, _output);
 }
 
 const std::wstring& COOKED_READ_DATA::_getPopupAttr()

@@ -30,7 +30,7 @@ public:
 
     bool Read(bool isUnicode, size_t& numBytes, ULONG& controlKeyState);
 
-    void EraseBeforeResize();
+    void EraseBeforeResize() const;
     void RedrawAfterResize();
 
     void SetInsertMode(bool insertMode) noexcept;
@@ -133,9 +133,6 @@ private:
                 CommandHistory::Index top;
                 // Command history index of the currently selected row.
                 CommandHistory::Index selected;
-                // Tracks the part of the popup that has previously been drawn and needs to be redrawn in the next paint.
-                // This becomes relevant when the length of the history changes while the popup is open (= when deleting entries).
-                til::CoordType dirtyHeight;
             } commandList;
         };
     };
@@ -165,7 +162,7 @@ private:
     void _offsetCursorPosition(ptrdiff_t distance) const;
     void _offsetCursorPositionAlways(ptrdiff_t distance) const;
     til::CoordType _getColumnAtRelativeCursorPosition(ptrdiff_t distance) const;
-    void _appendCUP(til::point pos);
+    static void _appendCUP(std::wstring& output, til::point pos);
     LayoutResult _layoutLine(std::wstring& output, const std::wstring_view& input, size_t inputOffset, til::CoordType columnBegin, til::CoordType columnLimit) const;
 
     void _popupPush(PopupKind kind);
@@ -175,8 +172,8 @@ private:
     void _popupHandleCommandNumberInput(Popup& popup, wchar_t wch, uint16_t vkey, DWORD modifiers);
     void _popupHandleCommandListInput(Popup& popup, wchar_t wch, uint16_t vkey, DWORD modifiers);
     void _popupHandleInput(wchar_t wch, uint16_t vkey, DWORD keyState);
-    void _popupDrawPrompt(const Popup& popup, UINT id);
-    void _popupDrawCommandList(Popup& popup);
+    static void _popupDrawPrompt(std::vector<Line>& lines, UINT id);
+    void _popupDrawCommandList(std::vector<Line>& lines, Popup& popup);
     const std::wstring& _getPopupAttr();
 
     SCREEN_INFORMATION& _screenInfo;
@@ -191,11 +188,11 @@ private:
     BufferState _buffer;
     til::point _originInViewport;
     til::CoordType _viewportTop = 0;
+    til::CoordType _viewportHeight = 0;
     bool _insertMode = false;
+    bool _dirty = false;
     State _state = State::Accumulating;
 
     std::vector<Popup> _popups;
     std::wstring _popupAttr;
-    
-    std::wstring _output;
 };
