@@ -774,6 +774,7 @@ void COOKED_READ_DATA::_flushBuffer()
     auto originInViewport = _originInViewport;
     til::point cursorPosition;
     til::point dirtyBegPosition;
+    til::point pagerEnd;
     std::vector<Line> lines;
 
     // FYI: This loop does not loop. It exists because goto is considered evil
@@ -790,10 +791,7 @@ void COOKED_READ_DATA::_flushBuffer()
             npos,
         };
 
-        LayoutResult res{
-            .column = cursorPosition.x,
-        };
-
+        LayoutResult res{ .column = cursorPosition.x };
         lines.emplace_back().columns = cursorPosition.x;
 
         for (int i = 0; i < 3; i++)
@@ -824,7 +822,7 @@ void COOKED_READ_DATA::_flushBuffer()
                 beg = res.offset;
             }
 
-            const til::point pos{ res.column, gsl::narrow_cast<til::CoordType>(lines.size()) - 1 };
+            const til::point pos{ res.column, gsl::narrow_cast<til::CoordType>(lines.size() - 1) };
             const auto endOffset = offsets[i + 1];
             if (endOffset == _bufferCursor)
             {
@@ -833,6 +831,31 @@ void COOKED_READ_DATA::_flushBuffer()
             if (endOffset == _bufferDirtyBeg)
             {
                 dirtyBegPosition = pos;
+            }
+        }
+
+        pagerEnd = { res.column, gsl::narrow_cast<til::CoordType>(lines.size() - 1) };
+        
+
+        // bbbbbbbbbbbbbbbbbbb aaaaaaaaaaaaaaaaaaaaaa
+        {
+            if (pagerEnd.y <= _pagerEnd.y)
+            {
+                auto& line = lines.back();
+                const auto endX = _pagerEnd.y == pagerEnd.y ? _pagerEnd.x : size.width;
+                const auto remaining = endX - line.columns;
+                if (remaining > 0)
+                {
+                    // CSI K may be expensive, so use spaces if we can.
+                    if (remaining <= 8)
+                    {
+                        line.text.append(remaining, L' ');
+                    }
+                    else
+                    {
+                        line.text.append(csi("K"));
+                    }
+                }
             }
         }
 
@@ -944,6 +967,7 @@ void COOKED_READ_DATA::_flushBuffer()
         _popupOpened = popupOpened;
     }
 
+    auto anyDirty = _bufferDirtyBeg != npos;
     if (const auto delta = pagerTop - _pagerTop; delta != 0)
     {
         const auto deltaAbs = abs(delta);
@@ -965,17 +989,7 @@ void COOKED_READ_DATA::_flushBuffer()
         }
 
         dirtyBegPosition = { 0, beg };
-    }
-
-    bool anyDirty = false;
-    for (til::CoordType i = 0; i < pagerHeight; i++)
-    {
-        const auto& line = lines.at(i + pagerTop);
-        anyDirty = line.dirtyBeg < line.text.size();
-        if (anyDirty)
-        {
-            break;
-        }
+        anyDirty = true;
     }
 
     if (anyDirty)
@@ -1005,28 +1019,15 @@ void COOKED_READ_DATA::_flushBuffer()
         // Accumulate all affected lines in a single string.
         for (til::CoordType i = 0; i < pagerHeight; i++)
         {
-            const auto& line = lines.at(i + pagerTop);
+            auto& line = lines.at(i + pagerTop);
             if (line.dirtyBeg >= line.text.size())
             {
                 continue;
             }
 
             fmt::format_to(std::back_inserter(output), FMT_COMPILE(L"\x1b[48;2;{};{};{}m"), GetRValue(color), GetGValue(color), GetBValue(color));
-            output.append(line.text, line.dirtyBeg);
 
-            const auto remaining = size.width - line.columns;
-            if (remaining > 0)
-            {
-                // CSI K may be expensive, so use spaces if we can.
-                if (remaining <= 8)
-                {
-                    output.append(remaining, L' ');
-                }
-                else
-                {
-                    output.append(csi("K"));
-                }
-            }
+            output.append(line.text, line.dirtyBeg);
 
             output.append(L"\x1b[m");
 
@@ -1038,19 +1039,17 @@ void COOKED_READ_DATA::_flushBuffer()
             }
         }
 
-        if (const auto& line = lines.at(pagerHeight + pagerTop - 1); line.dirtyBeg >= line.text.size() && line.columns < size.width)
-        {
-            output.append(csi("K"));
-        }
-
         // Clear any lines that we previously filled and are now empty.
-        for (til::CoordType i = pagerHeight; i < _pagerHeight; i++)
         {
-            if (i != 0)
+            const auto pagerHeightPrevious = std::min(_pagerEnd.y + 1, size.height);
+            for (til::CoordType i = pagerHeight; i < pagerHeightPrevious; i++)
             {
-                output.append(csi("E"));
+                if (i != 0)
+                {
+                    output.append(csi("E"));
+                }
+                output.append(csi("K"));
             }
-            output.append(csi("K"));
         }
     }
 
@@ -1059,7 +1058,7 @@ void COOKED_READ_DATA::_flushBuffer()
 
     _originInViewport = originInViewport;
     _pagerTop = pagerTop;
-    _pagerHeight = pagerHeight;
+    _pagerEnd = pagerEnd;
     _bufferDirtyBeg = _buffer.size();
     _dirty = false;
 }
@@ -1462,7 +1461,7 @@ void COOKED_READ_DATA::_popupDrawCommandList(std::vector<Line>& lines, const til
             line.append(csi("m"));
         }
 
-        lines.emplace_back(std::move(line), 0, res.column, true);
+        lines.emplace_back(std::move(line), 0, res.column, size.width, true);
     }
 
     lines.back().forceWrap = false;

@@ -113,8 +113,9 @@ private:
     {
         std::wstring text;
         size_t dirtyBeg = 0;
-        til::CoordType columns;
+        til::CoordType columns = 0;
         bool forceWrap = false;
+        bool dirty = false;
     };
 
     static size_t _wordPrev(const std::wstring_view& chars, size_t position);
@@ -158,9 +159,10 @@ private:
     State _state = State::Accumulating;
     bool _insertMode = false;
     bool _dirty = false;
+
     til::point _originInViewport;
     til::CoordType _pagerTop = 0;
-    til::CoordType _pagerHeight = 0;
+    til::point _pagerEnd;
 
     std::vector<Popup> _popups;
     std::wstring _popupAttr;
