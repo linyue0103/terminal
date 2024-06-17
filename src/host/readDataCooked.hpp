@@ -9,6 +9,7 @@
 class COOKED_READ_DATA final : public ReadData
 {
 public:
+    std::wstring_view _slice(size_t from, size_t to) const noexcept;
     COOKED_READ_DATA(_In_ InputBuffer* pInputBuffer,
                      _In_ INPUT_READ_HANDLE_DATA* pInputReadHandleData,
                      SCREEN_INFORMATION& screenInfo,
@@ -47,43 +48,6 @@ private:
         Accumulating = 0,
         DoneWithWakeupMask,
         DoneWithCarriageReturn,
-    };
-
-    // A helper struct to ensure we keep track of _dirtyBeg while the
-    // underlying _buffer is being modified by COOKED_READ_DATA.
-    struct BufferState
-    {
-        const std::wstring& Get() const noexcept;
-        std::wstring Extract() noexcept
-        {
-            return std::move(_buffer);
-        }
-        void Replace(size_t offset, size_t remove, const wchar_t* input, size_t count);
-        void Replace(const std::wstring_view& str);
-
-        size_t GetCursorPosition() const noexcept;
-        void SetCursorPosition(size_t pos) noexcept;
-
-        bool IsClean() const noexcept;
-        void MarkEverythingDirty() noexcept;
-        void MarkAsClean() noexcept;
-        void Suspend(bool suspended) noexcept;
-        
-        std::wstring_view GetTextBeforeCursor() const noexcept;
-        std::wstring_view GetTextAfterCursor() const noexcept;
-
-        std::wstring_view GetUnmodifiedTextBeforeCursor() const noexcept;
-        std::wstring_view GetUnmodifiedTextAfterCursor() const noexcept;
-        std::wstring_view GetModifiedTextBeforeCursor() const noexcept;
-        std::wstring_view GetModifiedTextAfterCursor() const noexcept;
-
-    private:
-        std::wstring_view _slice(size_t from, size_t to) const noexcept;
-
-        std::wstring _buffer;
-        size_t _dirtyBeg = npos;
-        size_t _cursor = 0;
-        bool _suspended = false;
     };
 
     enum class PopupKind
@@ -148,8 +112,9 @@ private:
     struct Line
     {
         std::wstring text;
-        // This value is meant exclusive. That is, writing 3 chars at column 0 will return columnEnd=3.
-        til::CoordType columnEnd;
+        size_t dirtyBeg = 0;
+        til::CoordType columns;
+        bool forceWrap = false;
     };
 
     static size_t _wordPrev(const std::wstring_view& chars, size_t position);
@@ -160,6 +125,9 @@ private:
     void _handleVkey(uint16_t vkey, DWORD modifiers);
     void _handlePostCharInputLoop(bool isUnicode, size_t& numBytes, ULONG& controlKeyState);
     void _transitionState(State state) noexcept;
+    void _replace(size_t offset, size_t remove, const wchar_t* input, size_t count);
+    void _replace(const std::wstring_view& str);
+    void _setCursorPosition(size_t position) noexcept;
     void _flushBuffer();
     LayoutResult _layoutLine(std::wstring& output, const std::wstring_view& input, size_t inputOffset, til::CoordType columnBegin, til::CoordType columnLimit) const;
     static void _appendCUP(std::wstring& output, til::point pos);
@@ -172,8 +140,8 @@ private:
     void _popupHandleCommandNumberInput(Popup& popup, wchar_t wch, uint16_t vkey, DWORD modifiers);
     void _popupHandleCommandListInput(Popup& popup, wchar_t wch, uint16_t vkey, DWORD modifiers);
     void _popupHandleInput(wchar_t wch, uint16_t vkey, DWORD keyState);
-    void _popupDrawPrompt(std::vector<Line>& lines, til::size size, UINT id, std::wstring_view suffix);
-    void _popupDrawCommandList(std::vector<Line>& lines, til::size size, Popup& popup);
+    void _popupDrawPrompt(std::vector<Line>& lines, til::size size, UINT id, std::wstring_view suffix) const;
+    void _popupDrawCommandList(std::vector<Line>& lines, til::size size, Popup& popup) const;
 
     SCREEN_INFORMATION& _screenInfo;
     std::span<char> _userBuffer;
@@ -183,14 +151,16 @@ private:
     ULONG _ctrlWakeupMask = 0;
     ULONG _controlKeyState = 0;
     std::unique_ptr<ConsoleHandleData> _tempHandle;
-
-    BufferState _buffer;
-    til::point _originInViewport;
-    til::CoordType _viewportTop = 0;
-    til::CoordType _viewportHeight = 0;
+    
+    std::wstring _buffer;
+    size_t _bufferDirtyBeg = npos;
+    size_t _bufferCursor = 0;
+    State _state = State::Accumulating;
     bool _insertMode = false;
     bool _dirty = false;
-    State _state = State::Accumulating;
+    til::point _originInViewport;
+    til::CoordType _pagerTop = 0;
+    til::CoordType _pagerHeight = 0;
 
     std::vector<Popup> _popups;
     std::wstring _popupAttr;

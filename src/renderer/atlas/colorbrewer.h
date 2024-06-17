@@ -33,4 +33,15 @@ namespace Microsoft::Console::Render::Atlas::colorbrewer
         0xfddaec,
         0xf2f2f2,
     };
+
+    inline constexpr u32 dark2[]{
+        0x1b9e77,
+        0xd95f02,
+        0x7570b3,
+        0xe7298a,
+        0x66a61e,
+        0xe6ab02,
+        0xa6761d,
+        0x666666,
+    };
 }
