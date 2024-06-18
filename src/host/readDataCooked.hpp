@@ -128,7 +128,7 @@ private:
     void _replace(size_t offset, size_t remove, const wchar_t* input, size_t count);
     void _replace(const std::wstring_view& str);
     void _setCursorPosition(size_t position) noexcept;
-    void _flushBuffer();
+    void _redisplay();
     LayoutResult _layoutLine(std::wstring& output, const std::wstring_view& input, size_t inputOffset, til::CoordType columnBegin, til::CoordType columnLimit) const;
     static void _appendCUP(std::wstring& output, til::point pos);
     void _appendPopupAttr(std::wstring& output) const;
@@ -160,8 +160,13 @@ private:
     bool _dirty = false;
 
     til::point _originInViewport;
-    til::CoordType _pagerTop = 0;
-    til::point _pagerEnd;
+    // This value is in the pager coordinate space. (0,0) is the first character of the
+    // first line, independent on where the prompt actually appears on the screen.
+    til::point _pagerPromptEnd;
+    // The scroll position of the pager.
+    til::CoordType _pagerContentTop = 0;
+    // Contains the number of lines within the pager.
+    til::CoordType _pagerContentHeight = 0;
 
     std::vector<Popup> _popups;
     std::wstring _popupAttr;

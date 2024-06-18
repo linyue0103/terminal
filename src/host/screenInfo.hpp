@@ -214,6 +214,9 @@ public:
 
     void SetIgnoreLegacyEquivalentVTAttributes() noexcept;
     void ResetIgnoreLegacyEquivalentVTAttributes() noexcept;
+    
+    [[nodiscard]] NTSTATUS ResizeWithReflow(const til::size coordnewScreenSize);
+    [[nodiscard]] NTSTATUS ResizeTraditional(const til::size coordNewScreenSize);
 
 private:
     SCREEN_INFORMATION(_In_ Microsoft::Console::Interactivity::IWindowMetrics* pMetrics,
@@ -237,9 +240,6 @@ private:
                                                const til::size* const pcoordFontSize,
                                                _Out_ bool* const pfIsHorizontalVisible,
                                                _Out_ bool* const pfIsVerticalVisible);
-
-    [[nodiscard]] NTSTATUS ResizeWithReflow(const til::size coordnewScreenSize);
-    [[nodiscard]] NTSTATUS ResizeTraditional(const til::size coordNewScreenSize);
 
     [[nodiscard]] NTSTATUS _InitializeOutputStateMachine();
     void _FreeOutputStateMachine();

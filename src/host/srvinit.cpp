@@ -395,8 +395,8 @@ HRESULT ConsoleCreateIoThread(_In_ HANDLE Server,
     // The conpty i/o threads need an actual client to be connected before they
     //      can start, so they're started below, in ConsoleAllocateConsole
     auto& gci = g.getConsoleInformation();
-    RETURN_IF_FAILED(gci.GetVtIo()->Initialize(args));
-    RETURN_IF_FAILED(gci.GetVtIo()->CreateAndStartSignalThread());
+    RETURN_IF_FAILED(gci.GetVtIoNoCheck()->Initialize(args));
+    RETURN_IF_FAILED(gci.GetVtIoNoCheck()->CreateAndStartSignalThread());
 
     return S_OK;
 }
@@ -867,7 +867,7 @@ PWSTR TranslateConsoleTitle(_In_ PCWSTR pwszConsoleTitle, const BOOL fUnexpand, 
     // No matter what, create a renderer.
     try
     {
-        if (!gci.IsInVtIoMode())
+        if (!gci.GetVtIo(nullptr))
         {
             auto renderThread = std::make_unique<RenderThread>();
             // stash a local pointer to the thread here -
@@ -970,7 +970,7 @@ PWSTR TranslateConsoleTitle(_In_ PCWSTR pwszConsoleTitle, const BOOL fUnexpand, 
     // We'll need the size of the screen buffer in the vt i/o initialization
     if (SUCCEEDED_NTSTATUS(Status))
     {
-        auto hr = gci.GetVtIo()->CreateIoHandlers();
+        auto hr = gci.GetVtIoNoCheck()->CreateIoHandlers();
         if (hr == S_FALSE)
         {
             // We're not in VT I/O mode, this is fine.
@@ -978,7 +978,7 @@ PWSTR TranslateConsoleTitle(_In_ PCWSTR pwszConsoleTitle, const BOOL fUnexpand, 
         else if (SUCCEEDED(hr))
         {
             // Actually start the VT I/O threads
-            hr = gci.GetVtIo()->StartIfNeeded();
+            hr = gci.GetVtIoNoCheck()->StartIfNeeded();
             // Don't convert S_FALSE to an NTSTATUS - the equivalent NTSTATUS
             //      is treated as an error
             if (hr != S_FALSE)

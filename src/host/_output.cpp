@@ -210,9 +210,8 @@ void WriteToScreen(SCREEN_INFORMATION& screenInfo, const Viewport& region)
 
     try
     {
-        if (gci.IsInVtIoMode())
+        if (const auto io = gci.GetVtIo(&OutContext))
         {
-            const auto io = gci.GetVtIo();
             const auto corkLock = io->Cork();
 
             const auto w = gsl::narrow_cast<uint64_t>(bufferSize.Width());
@@ -318,7 +317,7 @@ void WriteToScreen(SCREEN_INFORMATION& screenInfo, const Viewport& region)
     auto hr = S_OK;
     try
     {
-        if (gci.IsInVtIoMode())
+        if (const auto io = gci.GetVtIo(&OutContext))
         {
             // GH#3126 - This is a shim for powershell's `Clear-Host` function. In
             // the vintage console, `Clear-Host` is supposed to clear the entire
@@ -343,7 +342,6 @@ void WriteToScreen(SCREEN_INFORMATION& screenInfo, const Viewport& region)
                 }
             }
 
-            const auto io = gci.GetVtIo();
             const auto corkLock = io->Cork();
 
             const auto w = gsl::narrow_cast<uint64_t>(bufferSize.Width());

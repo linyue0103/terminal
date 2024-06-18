@@ -19,7 +19,6 @@
 #include "../types/inc/viewport.hpp"
 
 #include "../interactivity/inc/ServiceLocator.hpp"
-#include "til/unicode.h"
 
 #pragma hdrstop
 
@@ -610,14 +609,8 @@ CATCH_RETURN();
     {
         auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
 
-        Microsoft::Console::VirtualTerminal::VtIo* io = nullptr;
-        Microsoft::Console::VirtualTerminal::VtIo::CorkLock corkLock;
-
-        if (gci.IsInVtIoMode())
-        {
-            io = gci.GetVtIo();
-            corkLock = io->Cork();
-        }
+        const auto io = gci.GetVtIo(&context);
+        const auto corkLock = io ? io->Cork() : Microsoft::Console::VirtualTerminal::VtIo::CorkLock{};
 
         auto& storageBuffer = context.GetActiveBuffer();
         const auto storageRectangle = storageBuffer.GetBufferSize();
@@ -680,7 +673,6 @@ CATCH_RETURN();
 
         const auto writeRectangle = Viewport::FromInclusive(writeRegion);
         auto target = writeRectangle.Origin();
-        WORD attributes = 0xffff;
 
         // For every row in the request, create a view into the clamped portion of just the one line to write.
         // This allows us to restrict the width of the call without allocating/copying any memory by just making
@@ -700,69 +692,7 @@ CATCH_RETURN();
 
             if (io)
             {
-                io->WriteFormat(FMT_COMPILE("\x1b[{};{}H"), target.y + 1, target.x + 1);
-
-                const auto beg = charInfos.begin();
-                const auto end = charInfos.end();
-                const auto last = end - 1;
-
-                for (auto it = beg; it != end; ++it)
-                {
-                    const auto& ci = *it;
-                    auto ch = ci.Char.UnicodeChar;
-                    auto wide = WI_IsAnyFlagSet(ci.Attributes, COMMON_LVB_LEADING_BYTE | COMMON_LVB_TRAILING_BYTE);
-
-                    if (wide)
-                    {
-                        if (WI_IsAnyFlagSet(ci.Attributes, COMMON_LVB_LEADING_BYTE))
-                        {
-                            if (it == last)
-                            {
-                                // The leading half of a wide glyph won't fit into the last remaining column.
-                                // --> Replace it with a space.
-                                ch = UNICODE_SPACE;
-                                wide = false;
-                            }
-                        }
-                        else
-                        {
-                            if (it == beg)
-                            {
-                                // The trailing half of a wide glyph won't fit into the first column. It's incomplete.
-                                // --> Replace it with a space.
-                                ch = UNICODE_SPACE;
-                                wide = false;
-                            }
-                            else
-                            {
-                                // Trailing halves of glyphs are ignored within the run. We only emit the leading half.
-                                continue;
-                            }
-                        }
-                    }
-
-                    if (attributes != ci.Attributes)
-                    {
-                        attributes = ci.Attributes;
-                        io->WriteAttributes(attributes);
-                    }
-
-                    const auto isSurrogate = til::is_surrogate(ch);
-                    const auto isControl = Microsoft::Console::VirtualTerminal::VtIo::IsControlCharacter(ch);
-                    int repeat = 1;
-                    if (isSurrogate || isControl)
-                    {
-                        ch = isSurrogate ? UNICODE_REPLACEMENT : UNICODE_SPACE;
-                        // Space and U+FFFD are narrow characters, so if the caller intended
-                        // for a wide glyph we need to emit two U+FFFD characters.
-                        repeat = wide ? 2 : 1;
-                    }
-
-                    do
-                    {
-                        io->WriteUCS2(ch);
-                    } while (--repeat);
-                }
+                io->WriteInfos(target, charInfos);
             }
         }
 

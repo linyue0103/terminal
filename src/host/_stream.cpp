@@ -176,14 +176,8 @@ void WriteCharsLegacy(SCREEN_INFORMATION& screenInfo, const std::wstring_view& t
     const auto end = text.end();
 
     auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
-    Microsoft::Console::VirtualTerminal::VtIo* io = nullptr;
-    Microsoft::Console::VirtualTerminal::VtIo::CorkLock corkLock;
-
-    if (gci.IsInVtIoMode())
-    {
-        io = gci.GetVtIo();
-        corkLock = io->Cork();
-    }
+    const auto io = gci.GetVtIo(&screenInfo);
+    const auto corkLock = io ? io->Cork() : Microsoft::Console::VirtualTerminal::VtIo::CorkLock{};
 
     // If we enter this if condition, then someone wrote text in VT mode and now switched to non-VT mode.
     // Since the Console APIs don't support delayed EOL wrapping, we need to first put the cursor back
@@ -347,9 +341,9 @@ void WriteCharsVT(SCREEN_INFORMATION& screenInfo, const std::wstring_view& str)
 
     screenInfo.GetStateMachine().ProcessString(str);
 
-    if (gci.IsInVtIoMode())
+    if (const auto io = gci.GetVtIo(&screenInfo))
     {
-        gci.GetVtIo()->WriteUTF16(str);
+        io->WriteUTF16(str);
     }
 }
 

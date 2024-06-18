@@ -1959,8 +1959,8 @@ bool SCREEN_INFORMATION::_IsAltBuffer() const
 // - true iff this buffer has a main buffer.
 bool SCREEN_INFORMATION::_IsInPtyMode() const
 {
-    const auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
-    return _IsAltBuffer() || gci.IsInVtIoMode();
+    auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
+    return _IsAltBuffer() || gci.GetVtIo(nullptr);
 }
 
 // Routine Description:
@@ -2049,8 +2049,6 @@ void SCREEN_INFORMATION::SetPopupAttributes(const TextAttribute& popupAttributes
 void SCREEN_INFORMATION::SetDefaultAttributes(const TextAttribute& attributes,
                                               const TextAttribute& popupAttributes)
 {
-    auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
-
     const auto oldPrimaryAttributes = GetAttributes();
     const auto oldPopupAttributes = GetPopupAttributes();
 
@@ -2066,10 +2064,7 @@ void SCREEN_INFORMATION::SetDefaultAttributes(const TextAttribute& attributes,
     // Force repaint of entire viewport, unless we're in conpty mode. In that
     // case, we don't really need to force a redraw of the entire screen just
     // because the text attributes changed.
-    if (!(gci.IsInVtIoMode()))
-    {
-        _textBuffer->TriggerRedrawAll();
-    }
+    _textBuffer->TriggerRedrawAll();
 
     // If we're an alt buffer, also update our main buffer.
     if (_psiMainBuffer)

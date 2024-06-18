@@ -60,6 +60,7 @@ namespace Microsoft::Console::VirtualTerminal
         void WriteUTF16(const std::wstring_view& str);
         void WriteUCS2(wchar_t ch);
         void WriteAttributes(WORD attributes);
+        void WriteInfos(til::point target, std::span<CHAR_INFO> infos);
 
     private:
         [[nodiscard]] HRESULT _Initialize(const HANDLE InHandle, const HANDLE OutHandle, _In_opt_ const HANDLE SignalHandle);

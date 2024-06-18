@@ -363,7 +363,7 @@ void ApiRoutines::GetNumberOfConsoleMouseButtonsImpl(ULONG& buttons) noexcept
             WI_ClearFlag(gci.Flags, CONSOLE_USE_PRIVATE_FLAGS);
         }
 
-        if (gci.IsInVtIoMode())
+        if (const auto io = gci.GetVtIo(nullptr))
         {
             auto oldMode = context.InputMode;
             auto newMode = mode;
@@ -377,7 +377,6 @@ void ApiRoutines::GetNumberOfConsoleMouseButtonsImpl(ULONG& buttons) noexcept
 
             if (const auto diff = oldMode ^ newMode)
             {
-                const auto io = gci.GetVtIo();
                 const auto cork = io->Cork();
 
                 if (WI_IsFlagSet(diff, ENABLE_MOUSE_INPUT))
@@ -454,20 +453,20 @@ void ApiRoutines::GetNumberOfConsoleMouseButtonsImpl(ULONG& buttons) noexcept
         }
 
         auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
-        if (gci.IsInVtIoMode())
+        if (const auto io = gci.GetVtIo(&context))
         {
             if (WI_IsFlagSet(diff, ENABLE_WRAP_AT_EOL_OUTPUT))
             {
                 char buf[] = "\x1b[?7h"; // Autowrap Mode (DECAWM)
                 buf[std::size(buf) - 2] = WI_IsFlagSet(dwNewMode, ENABLE_WRAP_AT_EOL_OUTPUT) ? 'h' : 'l';
-                gci.GetVtIo()->WriteUTF8(buf);
+                io->WriteUTF8(buf);
             }
 
             if (WI_IsFlagSet(diff, DISABLE_NEWLINE_AUTO_RETURN))
             {
                 char buf[] = "\x1b[20h"; // Line Feed / New Line Mode (LNM)
                 buf[std::size(buf) - 2] = WI_IsFlagClear(mode, DISABLE_NEWLINE_AUTO_RETURN) ? 'h' : 'l';
-                gci.GetVtIo()->WriteUTF8(buf);
+                io->WriteUTF8(buf);
             }
         }
 
@@ -486,6 +485,51 @@ void ApiRoutines::SetConsoleActiveScreenBufferImpl(SCREEN_INFORMATION& newContex
     {
         LockConsole();
         auto Unlock = wil::scope_exit([&] { UnlockConsole(); });
+
+        auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
+        if (const auto io = gci.GetVtIo(nullptr))
+        {
+            const auto cork = io->Cork();
+
+            const auto viewport = gci.GetActiveOutputBuffer().GetBufferSize();
+            const auto size = viewport.Dimensions();
+            const auto area = static_cast<size_t>(viewport.Width() * viewport.Height());
+
+            auto& main = newContext.GetMainBuffer();
+            auto& alt = newContext.GetActiveBuffer();
+            const auto hasAltBuffer = &alt != &main;
+
+            THROW_IF_NTSTATUS_FAILED(main.ResizeTraditional(size));
+            if (hasAltBuffer)
+            {
+                THROW_IF_NTSTATUS_FAILED(alt.ResizeTraditional(size));
+            }
+
+            // TODO GH#5094: This could use xterm's XTWINOPS "\e[8;<height>;<width>t" escape sequence here.
+
+            io->WriteUTF8("\x1b[?1049l");
+
+            til::small_vector<CHAR_INFO, 1024> infos;
+            infos.resize(area, CHAR_INFO{ L' ', FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED });
+
+            Viewport read;
+            THROW_IF_FAILED(ReadConsoleOutputWImpl(main, infos, viewport, read));
+            for (til::CoordType i = 0; i < size.height; i++)
+            {
+                io->WriteInfos({ 0, i }, { infos.begin() + i * size.width, static_cast<size_t>(size.width) });
+            }
+
+            if (hasAltBuffer)
+            {
+                io->WriteUTF8("\x1b[?1049h");
+
+                THROW_IF_FAILED(ReadConsoleOutputWImpl(alt, infos, viewport, read));
+                for (til::CoordType i = 0; i < size.height; i++)
+                {
+                    io->WriteInfos({ 0, i }, { infos.begin() + i * size.width, static_cast<size_t>(size.width) });
+                }
+            }
+        }
 
         SetActiveScreenBuffer(newContext.GetActiveBuffer());
     }
@@ -586,6 +630,8 @@ void ApiRoutines::GetLargestConsoleWindowSizeImpl(const SCREEN_INFORMATION& cont
             cursor.SetPosition(clampedCursorPosition);
         }
 
+        // TODO GH#5094: This could use xterm's XTWINOPS "\e[8;<height>;<width>t" escape sequence here.
+
         return S_OK;
     }
     CATCH_RETURN();
@@ -642,7 +688,7 @@ void ApiRoutines::GetLargestConsoleWindowSizeImpl(const SCREEN_INFORMATION& cont
         // Only do this if we actually changed the value of the palette though -
         // this API gets called all the time to change all sorts of things, but
         // not necessarily the palette.
-        if (changedOneTableEntry && !gci.IsInVtIoMode())
+        if (changedOneTableEntry)
         {
             if (auto* pRender{ ServiceLocator::LocateGlobals().pRender })
             {
@@ -702,6 +748,8 @@ void ApiRoutines::GetLargestConsoleWindowSizeImpl(const SCREEN_INFORMATION& cont
             cursor.SetPosition(clampedCursorPosition);
         }
 
+        // TODO GH#5094: This could use xterm's XTWINOPS "\e[8;<height>;<width>t" escape sequence here.
+
         return S_OK;
     }
     CATCH_RETURN();
@@ -734,11 +782,11 @@ void ApiRoutines::GetLargestConsoleWindowSizeImpl(const SCREEN_INFORMATION& cont
 
         // MSFT: 15813316 - Try to use this SetCursorPosition call to inherit the cursor position.
         auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
-        if (gci.IsInVtIoMode())
+        if (const auto io = gci.GetVtIo(&context))
         {
             const auto x = std::clamp(position.x + 1, 1, coordScreenBufferSize.width);
             const auto y = std::clamp(position.y + 1, 1, coordScreenBufferSize.height);
-            gci.GetVtIo()->WriteFormat(FMT_COMPILE("\x1b[{};{}H"), y, x);
+            io->WriteFormat(FMT_COMPILE("\x1b[{};{}H"), y, x);
         }
 
         RETURN_IF_NTSTATUS_FAILED(buffer.SetCursorPosition(position, true));
@@ -816,11 +864,11 @@ void ApiRoutines::GetLargestConsoleWindowSizeImpl(const SCREEN_INFORMATION& cont
         context.SetCursorInformation(size, isVisible);
 
         auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
-        if (gci.IsInVtIoMode())
+        if (const auto io = gci.GetVtIo(&context))
         {
             char buf[] = "\x1b[?25l";
             buf[std::size(buf) - 2] = isVisible ? 'h' : 'l';
-            gci.GetVtIo()->WriteUTF8(buf);
+            io->WriteUTF8(buf);
         }
 
         return S_OK;
@@ -869,7 +917,7 @@ void ApiRoutines::GetLargestConsoleWindowSizeImpl(const SCREEN_INFORMATION& cont
         // if we're headless, not so much. However, GetMaxWindowSizeInCharacters
         //      will only return the buffer size, so we can't use that to clip the arg here.
         // So only clip the requested size if we're not headless
-        if (g.getConsoleInformation().IsInVtIoMode())
+        if (g.getConsoleInformation().GetVtIo(nullptr))
         {
             // SetViewportRect doesn't cause the buffer to resize. Manually resize the buffer.
             RETURN_IF_NTSTATUS_FAILED(context.ResizeScreenBuffer(Viewport::FromInclusive(Window).Dimensions(), false));
@@ -950,8 +998,7 @@ void ApiRoutines::GetLargestConsoleWindowSizeImpl(const SCREEN_INFORMATION& cont
         auto Unlock = wil::scope_exit([&] { UnlockConsole(); });
 
         auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
-
-        if (gci.IsInVtIoMode())
+        if (const auto io = gci.GetVtIo(&context))
         {
             // GH#3126 - This is a shim for cmd's `cls` function. In the
             // legacy console, `cls` is supposed to clear the entire buffer. In
@@ -969,18 +1016,17 @@ void ApiRoutines::GetLargestConsoleWindowSizeImpl(const SCREEN_INFORMATION& cont
                 !clip &&
                 fillCharacter == UNICODE_SPACE && fillAttribute == buffer.GetAttributes().GetLegacyAttributes())
             {
-                gci.GetVtIo()->WriteUTF8("\x1b[H\x1b[2J\x1b[3J");
+                io->WriteUTF8("\x1b[H\x1b[2J\x1b[3J");
                 return S_OK;
             }
 
-            const auto io = gci.GetVtIo();
             const auto corkLock = io->Cork();
 
             const auto clipViewport = clip ? Viewport::FromInclusive(*clip) : size;
             const auto sourceViewport = Viewport::FromInclusive(source);
             Viewport readViewport;
             Viewport writtenViewport;
-            
+
             const auto w = std::max(0, sourceViewport.Width());
             const auto h = std::max(0, sourceViewport.Height());
             const auto a = static_cast<size_t>(w * h);
@@ -1033,9 +1079,9 @@ void ApiRoutines::GetLargestConsoleWindowSizeImpl(const SCREEN_INFORMATION& cont
         context.SetAttributes(attr);
 
         auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
-        if (gci.IsInVtIoMode())
+        if (const auto io = gci.GetVtIo(&context))
         {
-            gci.GetVtIo()->WriteAttributes(attribute);
+            io->WriteAttributes(attribute);
         }
 
         return S_OK;
@@ -1157,7 +1203,6 @@ void ApiRoutines::GetConsoleWindowImpl(HWND& hwnd) noexcept
         LockConsole();
         auto Unlock = wil::scope_exit([&] { UnlockConsole(); });
         const IConsoleWindow* pWindow = ServiceLocator::LocateConsoleWindow();
-        const auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
         if (pWindow != nullptr)
         {
             hwnd = pWindow->GetWindowHandle();
@@ -1169,7 +1214,8 @@ void ApiRoutines::GetConsoleWindowImpl(HWND& hwnd) noexcept
             //      doesn't actually do anything, but is a unique HWND to this
             //      console, so that they know that this console is in fact a real
             //      console window.
-            if (gci.IsInVtIoMode())
+            auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
+            if (gci.GetVtIo(nullptr))
             {
                 hwnd = ServiceLocator::LocatePseudoWindow();
             }
@@ -1573,9 +1619,8 @@ void ApiRoutines::GetConsoleDisplayModeImpl(ULONG& flags) noexcept
     auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
     gci.SetTitle(title);
 
-    if (gci.IsInVtIoMode())
+    if (const auto io = gci.GetVtIo(nullptr))
     {
-        const auto io = gci.GetVtIo();
         const auto title8 = til::u16u8(title);
         io->WriteFormat(FMT_COMPILE("\x1b]0;{}\x7"), title8);
     }

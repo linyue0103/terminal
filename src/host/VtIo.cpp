@@ -407,6 +407,77 @@ void VtIo::WriteAttributes(WORD attributes)
     _flush();
 }
 
+void VtIo::WriteInfos(til::point target, std::span<CHAR_INFO> infos)
+{
+    const auto beg = infos.begin();
+    const auto end = infos.end();
+    const auto last = end - 1;
+    const auto cork = Cork();
+    WORD attributes = 0xffff;
+            
+    WriteFormat(FMT_COMPILE("\x1b[{};{}H"), target.y + 1, target.x + 1);
+
+    for (auto it = beg; it != end; ++it)
+    {
+        const auto& ci = *it;
+        auto ch = ci.Char.UnicodeChar;
+        auto wide = WI_IsAnyFlagSet(ci.Attributes, COMMON_LVB_LEADING_BYTE | COMMON_LVB_TRAILING_BYTE);
+
+        if (wide)
+        {
+            if (WI_IsAnyFlagSet(ci.Attributes, COMMON_LVB_LEADING_BYTE))
+            {
+                if (it == last)
+                {
+                    // The leading half of a wide glyph won't fit into the last remaining column.
+                    // --> Replace it with a space.
+                    ch = L' ';
+                    wide = false;
+                }
+            }
+            else
+            {
+                if (it == beg)
+                {
+                    // The trailing half of a wide glyph won't fit into the first column. It's incomplete.
+                    // --> Replace it with a space.
+                    ch = L' ';
+                    wide = false;
+                }
+                else
+                {
+                    // Trailing halves of glyphs are ignored within the run. We only emit the leading half.
+                    continue;
+                }
+            }
+        }
+
+        if (attributes != ci.Attributes)
+        {
+            attributes = ci.Attributes;
+            WriteAttributes(attributes);
+        }
+
+        const auto isSurrogate = til::is_surrogate(ch);
+        const auto isControl = IsControlCharacter(ch);
+        int repeat = 1;
+        if (isSurrogate || isControl)
+        {
+            ch = isSurrogate ? UNICODE_REPLACEMENT : L' ';
+            // Space and U+FFFD are narrow characters, so if the caller intended
+            // for a wide glyph we need to emit two U+FFFD characters.
+            repeat = wide ? 2 : 1;
+        }
+
+        do
+        {
+            WriteUCS2(ch);
+        } while (--repeat);
+    }
+
+    WriteUTF8("\x1b[m");
+}
+
 void VtIo::_uncork()
 {
     _corked -= 1;
