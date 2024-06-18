@@ -112,10 +112,9 @@ private:
     struct Line
     {
         std::wstring text;
-        size_t dirtyBeg = 0;
+        size_t dirtyBegOffset = 0;
+        til::CoordType dirtyBegColumn = 0;
         til::CoordType columns = 0;
-        bool forceWrap = false;
-        bool dirty = false;
     };
 
     static size_t _wordPrev(const std::wstring_view& chars, size_t position);

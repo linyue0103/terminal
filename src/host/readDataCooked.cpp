@@ -11,10 +11,14 @@
 #include "_stream.h"
 #include "../interactivity/inc/ServiceLocator.hpp"
 
+#define COOKED_READ_DEBUG 1
+
+#if COOKED_READ_DEBUG
+#include <til/colorbrewer.h>
+#endif
+
 #pragma warning(disable : 4100 4189)
 
-#define GetTextBufferAcceptable GetTextBuffer
-#define esc(x) L"\x1b" x
 #define csi(x) L"\x1b[" x
 
 using Microsoft::Console::Interactivity::ServiceLocator;
@@ -61,7 +65,7 @@ COOKED_READ_DATA::COOKED_READ_DATA(_In_ InputBuffer* const pInputBuffer,
     THROW_IF_FAILED(_screenInfo.GetMainBuffer().AllocateIoHandle(ConsoleHandleData::HandleType::Output, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, _tempHandle));
 #endif
 
-    const auto& textBuffer = _screenInfo.GetTextBufferAcceptable();
+    const auto& textBuffer = _screenInfo.GetTextBuffer();
     const auto& cursor = textBuffer.GetCursor();
     auto absoluteCursorPos = cursor.GetPosition();
 
@@ -236,7 +240,7 @@ void COOKED_READ_DATA::EraseBeforeResize() const
 {
     std::wstring output;
     _appendCUP(output, _originInViewport);
-    output.append(csi("J"));
+    output.append(L"\x1b[J");
     WriteCharsVT(_screenInfo, output);
 }
 
@@ -731,8 +735,13 @@ void COOKED_READ_DATA::_replace(size_t offset, size_t remove, const wchar_t* inp
 
     _buffer.replace(offset, remove, input, count);
     _bufferCursor = offset + count;
-    _bufferDirtyBeg = std::min(_bufferDirtyBeg, offset);
     _dirty = true;
+
+    if (offset <= _bufferDirtyBeg)
+    {
+        const auto& textBuffer = _screenInfo.GetTextBuffer();
+        _bufferDirtyBeg = textBuffer.GraphemePrev(_buffer, offset);
+    }
 }
 
 void COOKED_READ_DATA::_replace(const std::wstring_view& str)
@@ -772,17 +781,14 @@ void COOKED_READ_DATA::_flushBuffer()
 
     const auto size = _screenInfo.GetVirtualViewport().Dimensions();
     auto originInViewport = _originInViewport;
-    til::point cursorPosition;
-    til::point dirtyBegPosition;
-    til::point pagerEnd;
+    til::point cursorPositionFinal;
     std::vector<Line> lines;
 
     // FYI: This loop does not loop. It exists because goto is considered evil
     // and if MSVC says that then that must be true.
     for (;;)
     {
-        cursorPosition = { _originInViewport.x, 0 };
-        dirtyBegPosition = cursorPosition;
+        cursorPositionFinal = { _originInViewport.x, 0 };
 
         const size_t offsets[]{
             0,
@@ -791,8 +797,8 @@ void COOKED_READ_DATA::_flushBuffer()
             npos,
         };
 
-        LayoutResult res{ .column = cursorPosition.x };
-        lines.emplace_back().columns = cursorPosition.x;
+        LayoutResult res{ .column = cursorPositionFinal.x };
+        lines.emplace_back(std::wstring{}, 0, cursorPositionFinal.x, cursorPositionFinal.x);
 
         for (int i = 0; i < 3; i++)
         {
@@ -813,11 +819,14 @@ void COOKED_READ_DATA::_flushBuffer()
                 }
 
                 auto& line = lines.back();
-
                 res = _layoutLine(line.text, segment, beg, line.columns, size.width);
-
-                line.dirtyBeg = dirty ? line.dirtyBeg : line.text.size();
                 line.columns = res.column;
+
+                if (!dirty)
+                {
+                    line.dirtyBegOffset = line.text.size();
+                    line.dirtyBegColumn = res.column;
+                }
 
                 beg = res.offset;
             }
@@ -826,35 +835,25 @@ void COOKED_READ_DATA::_flushBuffer()
             const auto endOffset = offsets[i + 1];
             if (endOffset == _bufferCursor)
             {
-                cursorPosition = pos;
-            }
-            if (endOffset == _bufferDirtyBeg)
-            {
-                dirtyBegPosition = pos;
+                cursorPositionFinal = pos;
             }
         }
 
-        pagerEnd = { res.column, gsl::narrow_cast<til::CoordType>(lines.size() - 1) };
-        
-
-        // bbbbbbbbbbbbbbbbbbb aaaaaaaaaaaaaaaaaaaaaa
+        if (const auto lastRow = gsl::narrow_cast<til::CoordType>(lines.size() - 1); lastRow <= _pagerEnd.y)
         {
-            if (pagerEnd.y <= _pagerEnd.y)
+            auto& line = lines.back();
+            const auto endX = _pagerEnd.y == lastRow ? _pagerEnd.x : size.width;
+            const auto remaining = endX - line.columns;
+            if (remaining > 0)
             {
-                auto& line = lines.back();
-                const auto endX = _pagerEnd.y == pagerEnd.y ? _pagerEnd.x : size.width;
-                const auto remaining = endX - line.columns;
-                if (remaining > 0)
+                // CSI K may be expensive, so use spaces if we can.
+                if (remaining <= 8)
                 {
-                    // CSI K may be expensive, so use spaces if we can.
-                    if (remaining <= 8)
-                    {
-                        line.text.append(remaining, L' ');
-                    }
-                    else
-                    {
-                        line.text.append(csi("K"));
-                    }
+                    line.text.append(remaining, L' ');
+                }
+                else
+                {
+                    line.text.append(L"\x1b[K");
                 }
             }
         }
@@ -873,7 +872,7 @@ void COOKED_READ_DATA::_flushBuffer()
 
             // Ensure that the popup is not considered part of the prompt line. That is, if someone double-clicks
             // to select the last word in the prompt, it should not select the first word in the popup.
-            lines.back().forceWrap = true;
+            lines.back().text.append(L"\r\n");
 
             switch (popup.kind)
             {
@@ -894,16 +893,16 @@ void COOKED_READ_DATA::_flushBuffer()
             }
 
             // Put the cursor at the end of the contents. This ensures we scroll all the way down.
-            cursorPosition.x = lines.back().columns;
-            cursorPosition.y = gsl::narrow_cast<til::CoordType>(lines.size()) - 1;
+            cursorPositionFinal.x = lines.back().columns;
+            cursorPositionFinal.y = gsl::narrow_cast<til::CoordType>(lines.size()) - 1;
         }
         // If the cursor is at a delay-wrapped position, wrap it explicitly.
         // This ensures that the cursor is always "after" the insertion position.
         // We don't need to do this when popups are present, because they're not supposed to end in a newline.
-        else if (cursorPosition.x >= size.width)
+        else if (cursorPositionFinal.x >= size.width)
         {
-            cursorPosition.x = 0;
-            cursorPosition.y++;
+            cursorPositionFinal.x = 0;
+            cursorPositionFinal.y++;
 
             // If the cursor is at the end of the buffer however, we have to insert
             // a line because otherwise it won't have any space to be visible.
@@ -911,12 +910,6 @@ void COOKED_READ_DATA::_flushBuffer()
             {
                 lines.emplace_back(L" \b");
             }
-        }
-
-        if (dirtyBegPosition.x >= size.width)
-        {
-            dirtyBegPosition.x = 0;
-            dirtyBegPosition.y++;
         }
 
         // Usually we'll be on a "prompt> ..." line and behave like a regular single-line-editor.
@@ -944,17 +937,16 @@ void COOKED_READ_DATA::_flushBuffer()
 
     auto pagerTop = _pagerTop;
     // If the cursor is above the viewport, we go up...
-    pagerTop = std::min(pagerTop, cursorPosition.y);
+    pagerTop = std::min(pagerTop, cursorPositionFinal.y);
     // and if the cursor is below it, we go down.
-    pagerTop = std::max(pagerTop, cursorPosition.y - size.height + 1);
+    pagerTop = std::max(pagerTop, cursorPositionFinal.y - size.height + 1);
     // The value may be out of bounds, because the above min/max doesn't ensure this on its own.
     pagerTop = std::clamp(pagerTop, 0, lineCount - pagerHeight);
 
     // Transform the recorded position from the lines vector coordinate space into VT screen space.
     // Due to the above scrolling of pagerTop, cursorPosition should now always be within the viewport.
     // dirtyBegPosition however could be outside of it.
-    cursorPosition.y += originInViewport.y - pagerTop;
-    dirtyBegPosition.y += originInViewport.y - pagerTop;
+    cursorPositionFinal.y += originInViewport.y - pagerTop;
 
     std::wstring output;
 
@@ -967,7 +959,6 @@ void COOKED_READ_DATA::_flushBuffer()
         _popupOpened = popupOpened;
     }
 
-    auto anyDirty = _bufferDirtyBeg != npos;
     if (const auto delta = pagerTop - _pagerTop; delta != 0)
     {
         const auto deltaAbs = abs(delta);
@@ -979,93 +970,96 @@ void COOKED_READ_DATA::_flushBuffer()
             beg = delta >= 0 ? pagerHeight - deltaAbs : 0;
             end = delta >= 0 ? pagerHeight : deltaAbs;
             const auto cmd = delta >= 0 ? L'S' : L'T';
-            fmt::format_to(std::back_inserter(output), FMT_COMPILE(L"\x1b[H\x1b[{}{}"), deltaAbs, cmd);
+            fmt::format_to(std::back_inserter(output), FMT_COMPILE(L"\x1b[{}{}"), deltaAbs, cmd);
         }
 
         for (auto i = beg; i < end; i++)
         {
             auto& line = lines.at(i + pagerTop);
-            line.dirtyBeg = 0;
+            line.dirtyBegOffset = 0;
+            line.dirtyBegColumn = 0;
         }
+    }
 
-        dirtyBegPosition = { 0, beg };
-        anyDirty = true;
+    bool anyDirty = false;
+    for (til::CoordType i = 0; i < pagerHeight; i++)
+    {
+        const auto& line = lines.at(i + pagerTop);
+        anyDirty = line.dirtyBegOffset < line.text.size();
+        if (anyDirty)
+        {
+            break;
+        }
     }
 
     if (anyDirty)
     {
-        if (dirtyBegPosition.x < 0 && dirtyBegPosition.x >= size.width &&
-            dirtyBegPosition.y < 0 && dirtyBegPosition.y >= size.height)
-        {
-            dirtyBegPosition = {};
-        }
-
-        // Restore the cursor position where we previously stopped writing text.
-        _appendCUP(output, dirtyBegPosition);
-
-        constexpr uint32_t dark2[]{
-            0x1b9e77,
-            0xd95f02,
-            0x7570b3,
-            0xe7298a,
-            0x66a61e,
-            0xe6ab02,
-            0xa6761d,
-            0x666666,
-        };
         static size_t debugColorIndex = 0;
-        const auto color = dark2[++debugColorIndex % std::size(dark2)];
+
+#if COOKED_READ_DEBUG
+        const auto color = til::colorbrewer::dark2[++debugColorIndex % std::size(til::colorbrewer::dark2)];
+        fmt::format_to(std::back_inserter(output), FMT_COMPILE(L"\x1b[48;2;{};{};{}m"), GetRValue(color), GetGValue(color), GetBValue(color));
+#endif
+
+        til::point writeCUP{ -1, -1 };
+        til::CoordType row = _originInViewport.y - 1;
 
         // Accumulate all affected lines in a single string.
         for (til::CoordType i = 0; i < pagerHeight; i++)
         {
+            row = std::min(row + 1, size.height - 1);
+
+            if (writeCUP.x >= size.width)
+            {
+                writeCUP.x = 0;
+                writeCUP.y = row;
+            }
+
             auto& line = lines.at(i + pagerTop);
-            if (line.dirtyBeg >= line.text.size())
+            if (line.dirtyBegOffset >= line.text.size())
             {
                 continue;
             }
 
-            fmt::format_to(std::back_inserter(output), FMT_COMPILE(L"\x1b[48;2;{};{};{}m"), GetRValue(color), GetGValue(color), GetBValue(color));
-
-            output.append(line.text, line.dirtyBeg);
-
-            output.append(L"\x1b[m");
-
-            // Since the line ended in the middle of the viewport and because
-            // we have lines after this one, we need to insert a line break.
-            if (line.forceWrap)
+            if (const til::point pos{ line.dirtyBegColumn, row }; writeCUP != pos)
             {
-                output.append(L"\r\n");
+                writeCUP = pos;
+                _appendCUP(output, writeCUP);
             }
+
+            output.append(line.text, line.dirtyBegOffset);
+            writeCUP.x = line.columns;
         }
 
-        // Clear any lines that we previously filled and are now empty.
+#if COOKED_READ_DEBUG
+        output.append(L"\x1b[m");
+#endif
+    }
+
+    // Clear any lines that we previously filled and are now empty.
+    // This is technically not quite correct since there's no guarantee that the
+    // cursor is actually currently at the end of pager. In practice, it works.
+    {
+        const auto pagerHeightPrevious = std::min(_pagerEnd.y + 1, size.height);
+        for (til::CoordType i = pagerHeight; i < pagerHeightPrevious; i++)
         {
-            const auto pagerHeightPrevious = std::min(_pagerEnd.y + 1, size.height);
-            for (til::CoordType i = pagerHeight; i < pagerHeightPrevious; i++)
-            {
-                if (i != 0)
-                {
-                    output.append(csi("E"));
-                }
-                output.append(csi("K"));
-            }
+            output.append(L"\x1b[E\x1b[K");
         }
     }
 
-    _appendCUP(output, cursorPosition);
+    _appendCUP(output, cursorPositionFinal);
     WriteCharsVT(_screenInfo, output);
 
     _originInViewport = originInViewport;
     _pagerTop = pagerTop;
-    _pagerEnd = pagerEnd;
+    _pagerEnd = { lines.back().columns, lineCount - 1 };
     _bufferDirtyBeg = _buffer.size();
     _dirty = false;
 }
 
 COOKED_READ_DATA::LayoutResult COOKED_READ_DATA::_layoutLine(std::wstring& output, const std::wstring_view& input, const size_t inputOffset, const til::CoordType columnBegin, const til::CoordType columnLimit) const
 {
-    const auto& textBuffer = _screenInfo.GetTextBufferAcceptable();
+    const auto& textBuffer = _screenInfo.GetTextBuffer();
     const auto beg = input.data();
     const auto end = beg + input.size();
     auto it = beg + std::min(inputOffset, input.size());
@@ -1368,7 +1362,7 @@ void COOKED_READ_DATA::_popupDrawPrompt(std::vector<Line>& lines, const til::siz
     std::wstring line;
     _appendPopupAttr(line);
     const auto res = _layoutLine(line, str, 0, 0, size.width);
-    line.append(csi("m"));
+    line.append(L"\x1b[m");
 
     lines.emplace_back(std::move(line), 0, res.column);
 }
@@ -1418,6 +1412,7 @@ void COOKED_READ_DATA::_popupDrawCommandList(std::vector<Line>& lines, const til
         const auto selected = index == cl.selected;
 
         std::wstring line;
+        line.append(L"\x1b[K");
         _appendPopupAttr(line);
 
         wchar_t scrollbarChar = L' ';
@@ -1444,7 +1439,7 @@ void COOKED_READ_DATA::_popupDrawCommandList(std::vector<Line>& lines, const til
         }
         else
         {
-            line.append(csi("m") " ");
+            line.append(L"\x1b[m ");
         }
 
         fmt::format_to(std::back_inserter(line), FMT_COMPILE(L"{:{}}: "), index, indexWidth);
@@ -1458,11 +1453,13 @@ void COOKED_READ_DATA::_popupDrawCommandList(std::vector<Line>& lines, const til
 
         if (selected)
         {
-            line.append(csi("m"));
+            line.append(L"\x1b[m");
         }
 
-        lines.emplace_back(std::move(line), 0, res.column, size.width, true);
+        line.append(L"\r\n");
+        lines.emplace_back(std::move(line), 0, 0, res.column);
     }
 
-    lines.back().forceWrap = false;
+    auto& lastLine = lines.back();
+    lastLine.text.erase(lastLine.text.size() - 2);
 }

@@ -3,7 +3,7 @@
 
 #pragma once
 
-namespace Microsoft::Console::Render::Atlas::colorbrewer
+namespace til::colorbrewer
 {
     // The following list of colors is only used as a debug aid and not part of the final product.
     // They're licensed under:
@@ -22,7 +22,7 @@ namespace Microsoft::Console::Render::Atlas::colorbrewer
     //   CONDITIONS OF ANY KIND, either express or implied. See the License for the
     //   specific language governing permissions and limitations under the License.
     //
-    inline constexpr u32 pastel1[]{
+    inline constexpr uint32_t pastel1[]{
         0xfbb4ae,
         0xb3cde3,
         0xccebc5,
@@ -34,7 +34,7 @@ namespace Microsoft::Console::Render::Atlas::colorbrewer
         0xf2f2f2,
     };
 
-    inline constexpr u32 dark2[]{
+    inline constexpr uint32_t dark2[]{
         0x1b9e77,
         0xd95f02,
         0x7570b3,
