@@ -102,7 +102,7 @@ public:
     til::recursive_ticket_lock_suspension SuspendLock() noexcept;
     bool IsConsoleLocked() const noexcept;
     ULONG GetCSRecursionCount() const noexcept;
-    
+
     Microsoft::Console::VirtualTerminal::VtIo* GetVtIoNoCheck();
     Microsoft::Console::VirtualTerminal::VtIo* GetVtIo(const SCREEN_INFORMATION* context);
 

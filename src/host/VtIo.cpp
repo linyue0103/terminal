@@ -414,7 +414,7 @@ void VtIo::WriteInfos(til::point target, std::span<CHAR_INFO> infos)
     const auto last = end - 1;
     const auto cork = Cork();
     WORD attributes = 0xffff;
-            
+
     WriteFormat(FMT_COMPILE("\x1b[{};{}H"), target.y + 1, target.x + 1);
 
     for (auto it = beg; it != end; ++it)

@@ -151,7 +151,7 @@ private:
     ULONG _ctrlWakeupMask = 0;
     ULONG _controlKeyState = 0;
     std::unique_ptr<ConsoleHandleData> _tempHandle;
-    
+
     std::wstring _buffer;
     size_t _bufferDirtyBeg = npos;
     size_t _bufferCursor = 0;

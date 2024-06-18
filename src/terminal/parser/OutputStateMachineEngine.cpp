@@ -176,7 +176,7 @@ bool OutputStateMachineEngine::ActionPrintString(const std::wstring_view string)
 // - flush - set to true if the string should be flushed immediately.
 // Return Value:
 // - true iff we successfully dispatched the sequence.
-bool OutputStateMachineEngine::ActionPassThroughString(const std::wstring_view /*string*/, const bool /*flush*/)
+bool OutputStateMachineEngine::ActionPassThroughString(const std::wstring_view /*string*/, const bool /*flush*/) noexcept
 {
     return true;
 }
