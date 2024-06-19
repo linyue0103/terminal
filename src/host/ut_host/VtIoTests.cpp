@@ -23,7 +23,6 @@ class Microsoft::Console::VirtualTerminal::VtIoTests
 
     // General Tests:
     TEST_METHOD(NoOpStartTest);
-    TEST_METHOD(ModeParsingTest);
 
     TEST_METHOD(RendererDtorAndThread);
 
@@ -253,7 +252,7 @@ void VtIoTests::BasicAnonymousPipeOpeningWithSignalChannelTest()
     VtIo vtio;
     VERIFY_IS_FALSE(vtio.IsUsingVt());
     VERIFY_ARE_EQUAL(nullptr, vtio._pPtySignalInputThread);
-    VERIFY_SUCCEEDED(vtio._Initialize(inPipeReadSide.release(), outPipeWriteSide.release(), L"", signalPipeReadSide.release()));
+    VERIFY_SUCCEEDED(vtio._Initialize(inPipeReadSide.release(), outPipeWriteSide.release(), signalPipeReadSide.release()));
     VERIFY_SUCCEEDED(vtio.CreateAndStartSignalThread());
     VERIFY_SUCCEEDED(vtio.CreateIoHandlers());
     VERIFY_IS_TRUE(vtio.IsUsingVt());
