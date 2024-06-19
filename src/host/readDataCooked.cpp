@@ -11,15 +11,11 @@
 #include "_stream.h"
 #include "../interactivity/inc/ServiceLocator.hpp"
 
-#define COOKED_READ_DEBUG 1
+#define COOKED_READ_DEBUG 0
 
 #if COOKED_READ_DEBUG
 #include <til/colorbrewer.h>
 #endif
-
-#pragma warning(disable : 4100 4189)
-
-#define csi(x) L"\x1b[" x
 
 using Microsoft::Console::Interactivity::ServiceLocator;
 using Microsoft::Console::VirtualTerminal::VtIo;
@@ -266,8 +262,6 @@ bool COOKED_READ_DATA::PresentingPopup() const noexcept
 
 til::point_span COOKED_READ_DATA::GetBoundaries() const noexcept
 {
-    const auto& textBuffer = _screenInfo.GetTextBuffer();
-    const auto& cursor = textBuffer.GetCursor();
     const auto viewport = _screenInfo.GetViewport();
     const auto virtualViewport = _screenInfo.GetVirtualViewport();
 

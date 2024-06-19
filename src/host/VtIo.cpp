@@ -19,88 +19,6 @@ using namespace Microsoft::Console::Types;
 using namespace Microsoft::Console::Utils;
 using namespace Microsoft::Console::Interactivity;
 
-VtIo::CorkLock::CorkLock(VtIo* io) noexcept :
-    _io{ io }
-{
-}
-
-VtIo::CorkLock::~CorkLock() noexcept
-{
-    if (_io)
-    {
-        _io->_uncork();
-    }
-}
-
-VtIo::CorkLock::CorkLock(CorkLock&& other) noexcept :
-    _io{ std::exchange(other._io, nullptr) }
-{
-}
-
-VtIo::CorkLock& VtIo::CorkLock::operator=(CorkLock&& other) noexcept
-{
-    if (this != &other)
-    {
-        this->~CorkLock();
-        _io = std::exchange(other._io, nullptr);
-    }
-    return *this;
-}
-
-// Returns true for C0 characters and C1 [single-character] CSI.
-// A copy of isActionableFromGround() from stateMachine.cpp.
-bool VtIo::IsControlCharacter(wchar_t wch) noexcept
-{
-    // This is equivalent to:
-    //   return (wch <= 0x1f) || (wch >= 0x7f && wch <= 0x9f);
-    // It's written like this to get MSVC to emit optimal assembly for findActionableFromGround.
-    // It lacks the ability to turn boolean operators into binary operations and also happens
-    // to fail to optimize the printable-ASCII range check into a subtraction & comparison.
-    return (wch <= 0x1f) | (static_cast<wchar_t>(wch - 0x7f) <= 0x20);
-}
-
-static size_t formatAttributes(char (&buffer)[16], WORD attributes) noexcept
-{
-    const uint8_t rv = WI_IsFlagSet(attributes, COMMON_LVB_REVERSE_VIDEO) ? 7 : 27;
-    uint8_t fg = 39;
-    uint8_t bg = 49;
-
-    // `attributes` of exactly `FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED`
-    // are often used to indicate the default colors in Windows Console applications.
-    // Thus, we translate them to 39/49 (default foreground/background).
-    if ((attributes & (FG_ATTRS | BG_ATTRS)) != (FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED))
-    {
-        // The Console API represents colors in BGR order, but VT represents them in RGB order.
-        // This LUT transposes them. This is for foreground colors. Add +10 to get the background ones.
-        static const uint8_t lut[] = { 30, 34, 32, 36, 31, 35, 33, 37, 90, 94, 92, 96, 91, 95, 93, 97 };
-        fg = lut[attributes & 0xf];
-        bg = lut[(attributes >> 4) & 0xf] + 10;
-    }
-
-    return fmt::format_to(&buffer[0], FMT_COMPILE("\x1b[{};{};{}m"), rv, fg, bg) - &buffer[0];
-}
-
-void VtIo::FormatAttributes(std::string& target, WORD attributes)
-{
-    char buf[16];
-    const auto len = formatAttributes(buf, attributes);
-    target.append(buf, len);
-}
-
-void VtIo::FormatAttributes(std::wstring& target, WORD attributes)
-{
-    char buf[16];
-    const auto len = formatAttributes(buf, attributes);
-
-    wchar_t bufW[16];
-    for (size_t i = 0; i < len; i++)
-    {
-        bufW[i] = buf[i];
-    }
-
-    target.append(bufW, len);
-}
-
 [[nodiscard]] HRESULT VtIo::Initialize(const ConsoleArguments* const pArgs)
 {
     _lookingForCursorPosition = pArgs->GetInheritCursor();
@@ -343,6 +261,88 @@ VtIo::CorkLock VtIo::Cork() noexcept
 {
     _corked += 1;
     return CorkLock{ this };
+}
+
+VtIo::CorkLock::CorkLock(VtIo* io) noexcept :
+    _io{ io }
+{
+}
+
+VtIo::CorkLock::~CorkLock() noexcept
+{
+    if (_io)
+    {
+        _io->_uncork();
+    }
+}
+
+VtIo::CorkLock::CorkLock(CorkLock&& other) noexcept :
+    _io{ std::exchange(other._io, nullptr) }
+{
+}
+
+VtIo::CorkLock& VtIo::CorkLock::operator=(CorkLock&& other) noexcept
+{
+    if (this != &other)
+    {
+        this->~CorkLock();
+        _io = std::exchange(other._io, nullptr);
+    }
+    return *this;
+}
+
+// Returns true for C0 characters and C1 [single-character] CSI.
+// A copy of isActionableFromGround() from stateMachine.cpp.
+bool VtIo::IsControlCharacter(wchar_t wch) noexcept
+{
+    // This is equivalent to:
+    //   return (wch <= 0x1f) || (wch >= 0x7f && wch <= 0x9f);
+    // It's written like this to get MSVC to emit optimal assembly for findActionableFromGround.
+    // It lacks the ability to turn boolean operators into binary operations and also happens
+    // to fail to optimize the printable-ASCII range check into a subtraction & comparison.
+    return (wch <= 0x1f) | (static_cast<wchar_t>(wch - 0x7f) <= 0x20);
+}
+
+static size_t formatAttributes(char (&buffer)[16], WORD attributes) noexcept
+{
+    const uint8_t rv = WI_IsFlagSet(attributes, COMMON_LVB_REVERSE_VIDEO) ? 7 : 27;
+    uint8_t fg = 39;
+    uint8_t bg = 49;
+
+    // `attributes` of exactly `FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED`
+    // are often used to indicate the default colors in Windows Console applications.
+    // Thus, we translate them to 39/49 (default foreground/background).
+    if ((attributes & (FG_ATTRS | BG_ATTRS)) != (FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED))
+    {
+        // The Console API represents colors in BGR order, but VT represents them in RGB order.
+        // This LUT transposes them. This is for foreground colors. Add +10 to get the background ones.
+        static const uint8_t lut[] = { 30, 34, 32, 36, 31, 35, 33, 37, 90, 94, 92, 96, 91, 95, 93, 97 };
+        fg = lut[attributes & 0xf];
+        bg = lut[(attributes >> 4) & 0xf] + 10;
+    }
+
+    return fmt::format_to(&buffer[0], FMT_COMPILE("\x1b[{};{};{}m"), rv, fg, bg) - &buffer[0];
+}
+
+void VtIo::FormatAttributes(std::string& target, WORD attributes)
+{
+    char buf[16];
+    const auto len = formatAttributes(buf, attributes);
+    target.append(buf, len);
+}
+
+void VtIo::FormatAttributes(std::wstring& target, WORD attributes)
+{
+    char buf[16];
+    const auto len = formatAttributes(buf, attributes);
+
+    wchar_t bufW[16];
+    for (size_t i = 0; i < len; i++)
+    {
+        bufW[i] = buf[i];
+    }
+
+    target.append(bufW, len);
 }
 
 void VtIo::WriteUTF8(const std::string_view& str)
