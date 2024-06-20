@@ -3541,6 +3541,7 @@ bool AdaptDispatch::AssignColor(const DispatchTypes::ColorItem item, const VTInt
         const auto frameChanged = item == DispatchTypes::ColorItem::WindowFrame;
         _renderer->TriggerRedrawAll(backgroundChanged, frameChanged);
     }
+
     return true;
 }
 
