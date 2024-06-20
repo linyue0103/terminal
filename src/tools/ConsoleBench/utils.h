@@ -2,7 +2,7 @@
 
 // clang-format off
 #ifdef NDEBUG
-#define debugAssert(cond) if constexpr (false) { if (!(cond)); }
+#define debugAssert(cond) ((void)0)
 #else
 #define debugAssert(cond)  if (!(cond)) __debugbreak()
 #endif

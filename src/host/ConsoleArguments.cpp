@@ -110,7 +110,6 @@ ConsoleArguments::ConsoleArguments(const std::wstring& commandline,
     _vtOutHandle(hStdOut)
 {
     _clientCommandline = L"";
-    _vtMode = L"";
     _headless = false;
     _runAsComServer = false;
     _createServerHandle = true;
@@ -136,7 +135,6 @@ ConsoleArguments& ConsoleArguments::operator=(const ConsoleArguments& other)
         _clientCommandline = other._clientCommandline;
         _vtInHandle = other._vtInHandle;
         _vtOutHandle = other._vtOutHandle;
-        _vtMode = other._vtMode;
         _headless = other._headless;
         _createServerHandle = other._createServerHandle;
         _serverHandle = other._serverHandle;
@@ -474,7 +472,10 @@ void ConsoleArguments::s_ConsumeArg(_Inout_ std::vector<std::wstring>& args, _In
         }
         else if (arg == VT_MODE_ARG)
         {
-            hr = s_GetArgumentValue(args, i, &_vtMode);
+            // The --vtmode flag was hardcoded into telnet.exe to force ConPTY to filter non-ASCII characters.
+            // The filtering was moved into telnet, because no one else ever used this functionality.
+            s_ConsumeArg(args, i);
+            hr = S_OK;
         }
         else if (arg == WIDTH_ARG)
         {
@@ -509,10 +510,6 @@ void ConsoleArguments::s_ConsumeArg(_Inout_ std::vector<std::wstring>& args, _In
         // TODO: handle the rest of the possible params (MSFT:13271366, MSFT:13631640)
         // TODO: handle invalid args
         //  e.g. "conhost --foo bar" should not make the clientCommandline "--foo bar"
-        else if (til::starts_with(arg, L"--"))
-        {
-            hr = S_FALSE; // Ignore this unrecognized --argument.
-        }
         else
         {
             // If we encounter something that doesn't match one of our other

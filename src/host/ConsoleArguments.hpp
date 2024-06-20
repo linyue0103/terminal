@@ -116,8 +116,6 @@ private:
 
     HANDLE _vtOutHandle;
 
-    std::wstring _vtMode;
-
     bool _forceNoHandoff;
     bool _forceV1;
     bool _headless;
