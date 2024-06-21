@@ -127,6 +127,7 @@ private:
     void _transitionState(State state) noexcept;
     void _replace(size_t offset, size_t remove, const wchar_t* input, size_t count);
     void _replace(const std::wstring_view& str);
+    std::wstring_view _slice(size_t from, size_t to) const noexcept;
     void _setCursorPosition(size_t position) noexcept;
     void _redisplay();
     LayoutResult _layoutLine(std::wstring& output, const std::wstring_view& input, size_t inputOffset, til::CoordType columnBegin, til::CoordType columnLimit) const;
@@ -169,6 +170,5 @@ private:
     til::CoordType _pagerContentHeight = 0;
 
     std::vector<Popup> _popups;
-    std::wstring _popupAttr;
     bool _popupOpened = false;
 };
