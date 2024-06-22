@@ -9,7 +9,6 @@
 class COOKED_READ_DATA final : public ReadData
 {
 public:
-    std::wstring_view _slice(size_t from, size_t to) const noexcept;
     COOKED_READ_DATA(_In_ InputBuffer* pInputBuffer,
                      _In_ INPUT_READ_HANDLE_DATA* pInputReadHandleData,
                      SCREEN_INFORMATION& screenInfo,
